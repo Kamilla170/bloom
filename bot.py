@@ -1,109 +1,137 @@
 import os
 import asyncio
+import base64
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
-from aiogram.types import Message
-from dotenv import load_dotenv
+from aiogram.filters import CommandStart, Command
 from openai import OpenAI
 
-# Загружаем токены из .env
-load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Инициализация
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Простая база напоминаний в памяти
-reminders = {}
+# --- Хранилище в памяти ---
+user_plants = {}      # {user_id: [ {"name": ..., "type": ..., "watering_days": ..., "fertilizing_days": ...} ]}
+care_logs = {}        # {user_id: [ {"plant": ..., "action": ..., "time": ..., "notes": ...} ]}
+reminders = {}        # {datetime: (chat_id, task)}
 
-# --- Команда /start ---
+# --- START ---
 @dp.message(CommandStart())
-async def start_handler(message: Message):
+async def start(message: types.Message):
     await message.answer(
-        "Привет 🌱! Я бот по уходу за растениями.\n"
-        "Пришли мне текст — отвечу как GPT.\n"
-        "Пришли фото растения — попробую определить, что это.\n"
-        "Команда /remind для установки напоминания (полив, удобрение)."
+        "🌱 Привет! Я бот по уходу за растениями.\n\n"
+        "Функции:\n"
+        "📸 Пришли фото → скажу что за растение.\n"
+        "💬 Задай вопрос → отвечу GPT.\n"
+        "🔬 /health → проверка здоровья.\n"
+        "📅 /schedule → расписание ухода.\n"
+        "📝 /log → журнал.\n"
+        "📊 /stats → статистика.\n"
+        "⏰ /remind → напоминания."
     )
 
-# --- Обработка фото ---
+# --- GPT ответы на текст ---
+@dp.message(lambda m: m.text and not m.text.startswith("/"))
+async def gpt_answer(message: types.Message):
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Ты эксперт по уходу за растениями."},
+            {"role": "user", "content": message.text}
+        ]
+    )
+    await message.answer(resp.choices[0].message.content)
+
+# --- Анализ фото ---
 @dp.message(lambda m: m.photo)
-async def handle_photo(message: Message):
-    try:
-        photo = message.photo[-1]  # Берём фото в хорошем качестве
-        file = await bot.get_file(photo.file_id)
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+async def analyze_photo(message: types.Message):
+    photo = message.photo[-1]
+    file = await bot.get_file(photo.file_id)
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Ты бот-эксперт по растениям."},
-                {"role": "user", "content": f"Что это за растение? Дай совет по уходу. Фото: {file_url}"}
-            ]
-        )
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Определи растение и дай советы по уходу."},
+            {"role": "user", "content": f"Фото: {file_url}"}
+        ]
+    )
+    await message.answer(resp.choices[0].message.content)
 
-        answer = response.choices[0].message.content
-        await message.answer(answer)
+# --- Напоминания ---
+@dp.message(Command("remind"))
+async def remind(message: types.Message):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        return await message.answer("Использование: /remind <минуты> <задача>")
+    minutes = int(parts[1])
+    task = parts[2]
+    remind_time = datetime.now() + timedelta(minutes=minutes)
+    reminders[remind_time] = (message.chat.id, task)
+    await message.answer(f"⏰ Напоминание: {task} через {minutes} минут")
 
-    except Exception as e:
-        await message.answer("Не удалось проанализировать фото 😔")
-        print("Ошибка фото:", e)
-
-# --- Обработка текста ---
-@dp.message()
-async def gpt_handler(message: Message):
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Ты бот-эксперт по уходу за растениями и цветами."},
-                {"role": "user", "content": message.text},
-            ],
-        )
-        answer = response.choices[0].message.content
-        await message.answer(answer)
-    except Exception as e:
-        await message.answer("Ошибка при запросе к GPT 😔")
-        print("Ошибка GPT:", e)
-
-# --- Установка напоминания ---
-@dp.message(lambda m: m.text and m.text.startswith("/remind"))
-async def remind_handler(message: Message):
-    try:
-        parts = message.text.split(maxsplit=2)
-        if len(parts) < 3:
-            return await message.answer("Использование: /remind <минуты> <задача>\nНапример: /remind 1 полить цветок")
-
-        minutes = int(parts[1])
-        task = parts[2]
-
-        remind_time = datetime.now() + timedelta(minutes=minutes)
-        reminders[remind_time] = (message.chat.id, task)
-
-        await message.answer(f"⏰ Напоминание установлено: {task} через {minutes} минут")
-
-    except Exception as e:
-        await message.answer("Ошибка при установке напоминания")
-        print("Ошибка напоминания:", e)
-
-# --- Проверка и отправка напоминаний ---
 async def reminder_loop():
     while True:
         now = datetime.now()
-        due = [time for time in reminders if time <= now]
-        for time in due:
-            chat_id, task = reminders.pop(time)
-            await bot.send_message(chat_id, f"🌿 Напоминание: {task}")
+        for t in list(reminders.keys()):
+            if t <= now:
+                chat_id, task = reminders.pop(t)
+                await bot.send_message(chat_id, f"🌿 Напоминание: {task}")
         await asyncio.sleep(30)
 
-# --- Запуск ---
+# --- Проверка здоровья ---
+@dp.message(Command("health"))
+async def health(message: types.Message):
+    await message.answer("📸 Пришли фото растения для проверки здоровья.")
+
+# --- Генерация расписания ---
+@dp.message(Command("schedule"))
+async def schedule(message: types.Message):
+    plants = user_plants.get(message.from_user.id, [])
+    if not plants:
+        return await message.answer("🌱 Сначала добавь растения в память (упрощённо).")
+    info = "\n".join([f"{p['name']} ({p['type']})" for p in plants])
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Составь недельное расписание ухода."},
+            {"role": "user", "content": f"Создай расписание ухода для: {info}"}
+        ]
+    )
+    await message.answer(resp.choices[0].message.content)
+
+# --- Журнал ухода ---
+@dp.message(Command("log"))
+async def log(message: types.Message):
+    logs = care_logs.get(message.from_user.id, [])
+    if not logs:
+        return await message.answer("📝 Журнал пуст.")
+    text = "📝 Последние действия:\n\n"
+    for log in logs[-10:]:
+        text += f"{log['time']} — {log['plant']} — {log['action']} ({log['notes']})\n"
+    await message.answer(text)
+
+# --- Статистика ---
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    logs = care_logs.get(message.from_user.id, [])
+    if not logs:
+        return await message.answer("📊 Нет статистики.")
+    total = len(logs)
+    watering = sum(1 for l in logs if l['action'] == "полив")
+    fertilizing = sum(1 for l in logs if l['action'] == "подкормка")
+    await message.answer(
+        f"📊 Статистика:\nВсего действий: {total}\n💧 Поливов: {watering}\n🌿 Подкормок: {fertilizing}"
+    )
+
+# --- MAIN ---
 async def main():
-    asyncio.create_task(reminder_loop())  # запуск проверки напоминаний
+    asyncio.create_task(reminder_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
