@@ -15,6 +15,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
 from openai import AsyncOpenAI
 from PIL import Image
+from database import init_database, get_db
 
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -27,8 +28,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-from database import PlantDatabase
-db = PlantDatabase()
+# Временное хранилище для анализов (до сохранения)
+temp_analyses = {}
 
 # Состояния
 class PlantStates(StatesGroup):
@@ -136,11 +137,17 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None) -> d
 async def start_command(message: types.Message):
     """Команда /start"""
     user_id = message.from_user.id
-    if user_id not in users_data:
-        users_data[user_id] = {
-            "plants": [],
-            "reminders": []
-        }
+    
+    # Добавляем пользователя в БД
+    try:
+        db = await get_db()
+        await db.add_user(
+            user_id=user_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name
+        )
+    except Exception as e:
+        print(f"Ошибка добавления пользователя: {e}")
     
     await message.answer(
         f"🌱 Привет, {message.from_user.first_name}!\n\n"
@@ -197,12 +204,9 @@ async def handle_photo(message: types.Message):
         await processing_msg.delete()
         
         if result["success"]:
-            # Сохраняем анализ для пользователя
+            # Сохраняем временный анализ
             user_id = message.from_user.id
-            if user_id not in users_data:
-                users_data[user_id] = {"plants": [], "reminders": []}
-            
-            users_data[user_id]["last_analysis"] = {
+            temp_analyses[user_id] = {
                 "analysis": result["analysis"],
                 "photo_file_id": photo.file_id,
                 "date": datetime.now()
@@ -222,6 +226,7 @@ async def handle_photo(message: types.Message):
             await message.reply(f"❌ Ошибка анализа: {result['error']}")
             
     except Exception as e:
+        print(f"Ошибка обработки фото: {e}")
         await message.reply("❌ Произошла ошибка. Попробуйте позже.")
 
 # Callback обработчики
@@ -266,6 +271,7 @@ async def handle_question(message: types.Message, state: FSMContext):
         await state.clear()
         
     except Exception as e:
+        print(f"Ошибка ответа на вопрос: {e}")
         await message.reply("❌ Произошла ошибка. Попробуйте позже.")
         await state.clear()
 
@@ -274,25 +280,30 @@ async def save_plant_callback(callback: types.CallbackQuery):
     """Сохранение растения"""
     user_id = callback.from_user.id
     
-    if user_id in users_data and "last_analysis" in users_data[user_id]:
-        analysis_data = users_data[user_id]["last_analysis"]
-        
-        # Простое сохранение в память
-        plant = {
-            "id": len(users_data[user_id]["plants"]) + 1,
-            "analysis": analysis_data["analysis"],
-            "photo_file_id": analysis_data["photo_file_id"],
-            "saved_date": datetime.now(),
-            "last_watered": None
-        }
-        
-        users_data[user_id]["plants"].append(plant)
-        
-        await callback.message.answer(
-            "✅ Растение сохранено!\n"
-            "Теперь вы можете отмечать полив и получать напоминания.",
-            reply_markup=main_menu()
-        )
+    if user_id in temp_analyses:
+        try:
+            analysis_data = temp_analyses[user_id]
+            
+            # Сохраняем в БД
+            db = await get_db()
+            plant_id = await db.save_plant(
+                user_id=user_id,
+                analysis=analysis_data["analysis"],
+                photo_file_id=analysis_data["photo_file_id"]
+            )
+            
+            # Удаляем временные данные
+            del temp_analyses[user_id]
+            
+            await callback.message.answer(
+                "✅ Растение сохранено в вашу коллекцию!\n"
+                "Теперь вы можете отмечать полив и получать напоминания.",
+                reply_markup=main_menu()
+            )
+            
+        except Exception as e:
+            print(f"Ошибка сохранения растения: {e}")
+            await callback.message.answer("❌ Ошибка сохранения. Попробуйте позже.")
     else:
         await callback.message.answer("❌ Нет данных для сохранения. Сначала проанализируйте растение.")
     
@@ -303,33 +314,42 @@ async def my_plants_callback(callback: types.CallbackQuery):
     """Просмотр сохраненных растений"""
     user_id = callback.from_user.id
     
-    if user_id not in users_data or not users_data[user_id]["plants"]:
-        await callback.message.answer(
-            "🌱 У вас пока нет сохраненных растений.\n"
-            "Пришлите фото растения для анализа!",
-            reply_markup=main_menu()
-        )
-        await callback.answer()
-        return
-    
-    plants = users_data[user_id]["plants"]
-    text = f"🌿 <b>Ваши растения ({len(plants)}):</b>\n\n"
-    
-    for i, plant in enumerate(plants[-5:], 1):  # Показываем последние 5
-        saved_date = plant["saved_date"].strftime("%d.%m.%Y")
-        watered = plant["last_watered"].strftime("%d.%m") if plant["last_watered"] else "никогда"
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=5)
         
-        text += f"{i}. Растение #{plant['id']}\n"
-        text += f"   📅 Добавлено: {saved_date}\n"
-        text += f"   💧 Полив: {watered}\n\n"
+        if not plants:
+            await callback.message.answer(
+                "🌱 У вас пока нет сохраненных растений.\n"
+                "Пришлите фото растения для анализа!",
+                reply_markup=main_menu()
+            )
+            await callback.answer()
+            return
+        
+        text = f"🌿 <b>Ваши растения ({len(plants)}):</b>\n\n"
+        
+        for i, plant in enumerate(plants, 1):
+            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+            watered = plant["last_watered"].strftime("%d.%m") if plant["last_watered"] else "никогда"
+            
+            text += f"{i}. Растение #{plant['id']}\n"
+            text += f"   📅 Добавлено: {saved_date}\n"
+            text += f"   💧 Полив: {watered}\n\n"
+        
+        # Кнопки для действий с растениями
+        keyboard = [
+            [InlineKeyboardButton(text="💧 Отметить полив", callback_data="water_plants")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+        
+    except Exception as e:
+        print(f"Ошибка загрузки растений: {e}")
+        await callback.message.answer("❌ Ошибка загрузки растений.")
     
-    # Кнопки для действий с растениями
-    keyboard = [
-        [InlineKeyboardButton(text="💧 Отметить полив", callback_data="water_plants")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-    ]
-    
-    await callback.message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
     await callback.answer()
 
 @dp.callback_query(F.data == "water_plants")
@@ -337,18 +357,48 @@ async def water_plants_callback(callback: types.CallbackQuery):
     """Отметка полива"""
     user_id = callback.from_user.id
     
-    if user_id in users_data and users_data[user_id]["plants"]:
-        # Отмечаем полив для всех растений
-        for plant in users_data[user_id]["plants"]:
-            plant["last_watered"] = datetime.now()
+    try:
+        db = await get_db()
+        await db.update_watering(user_id)
         
         await callback.message.answer(
             "✅ Полив отмечен для всех растений!\n"
             "Не забудьте полить их снова через несколько дней.",
             reply_markup=main_menu()
         )
-    else:
-        await callback.message.answer("❌ Нет растений для полива.")
+        
+    except Exception as e:
+        print(f"Ошибка отметки полива: {e}")
+        await callback.message.answer("❌ Ошибка отметки полива.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "stats")
+async def stats_callback(callback: types.CallbackQuery):
+    """Статистика пользователя"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        stats = await db.get_user_stats(user_id)
+        
+        text = f"📊 <b>Ваша статистика:</b>\n\n"
+        text += f"🌱 Всего растений: {stats['total_plants']}\n"
+        text += f"💧 Политых растений: {stats['watered_plants']}\n"
+        
+        if stats['first_plant_date']:
+            first_date = stats['first_plant_date'].strftime("%d.%m.%Y")
+            text += f"📅 Первое растение: {first_date}\n"
+        
+        if stats['last_watered_date']:
+            last_watered = stats['last_watered_date'].strftime("%d.%m.%Y")
+            text += f"💧 Последний полив: {last_watered}\n"
+        
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=main_menu())
+        
+    except Exception as e:
+        print(f"Ошибка загрузки статистики: {e}")
+        await callback.message.answer("❌ Ошибка загрузки статистики.")
     
     await callback.answer()
 
@@ -362,7 +412,7 @@ async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
     """Вопрос о проанализированном растении"""
     user_id = callback.from_user.id
     
-    if user_id in users_data and "last_analysis" in users_data[user_id]:
+    if user_id in temp_analyses:
         await callback.message.answer(
             "❓ Задайте вопрос об этом растении:\n"
             "Например: 'Почему желтеют листья?' или 'Как часто поливать?'"
@@ -375,6 +425,9 @@ async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
 
 # Webhook setup для Railway
 async def on_startup():
+    # Инициализируем базу данных
+    await init_database()
+    
     if WEBHOOK_URL:
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
         print(f"Webhook установлен: {WEBHOOK_URL}/webhook")
@@ -383,6 +436,9 @@ async def on_startup():
         print("Webhook удален, используется polling")
 
 async def on_shutdown():
+    # Закрываем соединения с БД
+    db = await get_db()
+    await db.close()
     await bot.session.close()
 
 # Webhook handler
