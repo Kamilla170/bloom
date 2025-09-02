@@ -4,3 +4,6 @@ httpx==0.25.2
 python-dotenv>=1.0.0
 Pillow>=10.0.0
 tqdm>=4.67.1
+asyncpg>=0.29.0
+sqlalchemy>=2.0.0
+alembic>=1.13.0
