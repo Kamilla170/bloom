@@ -27,8 +27,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# Простое хранилище в памяти (в продакшене используйте базу данных)
-users_data = {}
+from database import PlantDatabase
+db = PlantDatabase()
 
 # Состояния
 class PlantStates(StatesGroup):
