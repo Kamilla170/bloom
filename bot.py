@@ -20,13 +20,15 @@ from database import init_database, get_db
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
+PLANTID_API_KEY = os.getenv("PLANTID_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
 
 # Инициализация
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Временное хранилище для анализов (до сохранения)
 temp_analyses = {}
@@ -143,66 +145,251 @@ async def optimize_image(image_data: bytes) -> bytes:
     except:
         return image_data
 
-# Анализ растения с красивым форматированием
-async def analyze_plant_image(image_data: bytes, user_question: str = None) -> dict:
-    """Анализ изображения растения с улучшенным форматированием"""
+# Функция-заглушка для случаев, когда API недоступны
+async def fallback_plant_analysis(user_question: str = None) -> dict:
+    """Резервная функция анализа с общими советами"""
+    
+    fallback_text = """
+РАСТЕНИЕ: Комнатное растение
+СОСТОЯНИЕ: Для точной оценки рекомендуется визуальный осмотр листьев и корней
+ПОЛИВ: Проверяйте влажность почвы пальцем - поливайте когда верхний слой подсох на 2-3 см
+СВЕТ: Большинство растений предпочитают яркий рассеянный свет без прямых солнечных лучей
+ТЕМПЕРАТУРА: 18-24°C - оптимальный диапазон для большинства комнатных растений
+СОВЕТ: Наблюдайте за растением - листья подскажут его потребности (желтые листья - переувлажнение, коричневые кончики - сухость)
+    """.strip()
+    
+    if user_question:
+        fallback_text += f"\n\nПо вашему вопросу '{user_question}': Рекомендуем обратиться к справочнику по комнатным растениям или проконсультироваться в садовом центре."
+    
+    formatted_analysis = format_plant_analysis(fallback_text)
+    
+    return {
+        "success": True,
+        "analysis": formatted_analysis,
+        "raw_analysis": fallback_text,
+        "fallback": True
+    }
+
+# Анализ через Plant.id API
+async def analyze_with_plantid(image_data: bytes) -> dict:
+    """Анализ растения через Plant.id API"""
     try:
-        # Оптимизируем изображение
+        import httpx
+        
+        if not PLANTID_API_KEY:
+            return await fallback_plant_analysis()
+        
         optimized_image = await optimize_image(image_data)
         base64_image = base64.b64encode(optimized_image).decode('utf-8')
         
-        # Структурированный промпт для краткого ответа
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.plant.id/v2/identify",
+                json={
+                    "images": [f"data:image/jpeg;base64,{base64_image}"],
+                    "modifiers": ["crops_fast", "similar_images", "health_assessment"],
+                    "plant_language": "ru",
+                    "plant_details": ["common_names", "care"]
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Api-Key": PLANTID_API_KEY
+                }
+            )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if data.get("suggestions") and len(data["suggestions"]) > 0:
+                suggestion = data["suggestions"][0]
+                plant_name = suggestion.get("plant_name", "Неизвестное растение")
+                probability = suggestion.get("probability", 0) * 100
+                
+                # Получаем информацию о здоровье если есть
+                health_info = "Требуется визуальная оценка"
+                if data.get("health_assessment"):
+                    health = data["health_assessment"]
+                    if health.get("is_healthy"):
+                        if health["is_healthy"]["probability"] > 0.7:
+                            health_info = "Выглядит здоровым"
+                        else:
+                            health_info = "Возможны проблемы со здоровьем"
+                
+                analysis_text = f"""
+РАСТЕНИЕ: {plant_name} (достоверность: {probability:.0f}%)
+СОСТОЯНИЕ: {health_info}
+ПОЛИВ: Поливайте когда верхний слой почвы подсохнет на 2-3 см
+СВЕТ: Яркий рассеянный свет, избегайте прямых солнечных лучей
+ТЕМПЕРАТУРА: 18-24°C для большинства комнатных растений  
+СОВЕТ: Изучите конкретные потребности данного вида растения для оптимального ухода
+                """.strip()
+                
+                formatted_analysis = format_plant_analysis(analysis_text)
+                
+                return {
+                    "success": True,
+                    "analysis": formatted_analysis,
+                    "raw_analysis": analysis_text,
+                    "plant_name": plant_name,
+                    "confidence": probability
+                }
+        
+        return await fallback_plant_analysis()
+        
+    except Exception as e:
+        print(f"Plant.id API error: {e}")
+        return await fallback_plant_analysis()
+
+# Анализ через Claude API
+async def analyze_with_claude(image_data: bytes, user_question: str = None) -> dict:
+    """Анализ растения через Claude API"""
+    try:
+        import anthropic
+        
+        if not CLAUDE_API_KEY:
+            return await fallback_plant_analysis(user_question)
+        
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        
+        optimized_image = await optimize_image(image_data)
+        base64_image = base64.b64encode(optimized_image).decode('utf-8')
+        
         prompt = """
-        Проанализируй растение и дай КРАТКИЙ ответ в таком формате:
+        Проанализируйте это комнатное растение и дайте практические советы по уходу в формате:
 
-        РАСТЕНИЕ: [название растения]
-        СОСТОЯНИЕ: [здоровье одним предложением]
-        ПОЛИВ: [как часто поливать]
+        РАСТЕНИЕ: [тип/название растения]
+        СОСТОЯНИЕ: [оценка здоровья по внешнему виду]
+        ПОЛИВ: [рекомендации по частоте и способу полива]
         СВЕТ: [требования к освещению]
-        ТЕМПЕРАТУРА: [оптимальная температура]
-        СОВЕТ: [один важный совет по уходу]
+        ТЕМПЕРАТУРА: [оптимальный температурный режим]
+        СОВЕТ: [главная рекомендация по улучшению ухода]
 
-        Отвечай кратко и четко на русском языке.
+        Отвечайте кратко и практично на русском языке.
         """
         
         if user_question:
-            prompt += f"\n\nТакже ответь на вопрос: {user_question}"
+            prompt += f"\n\nТакже ответьте на вопрос: {user_question}"
         
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
+        message = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=600,
             messages=[
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
                         {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}",
-                                "detail": "high"
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": base64_image
                             }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
                         }
                     ]
                 }
-            ],
-            max_tokens=600,  # Ограничиваем для краткости
-            temperature=0.3
+            ]
         )
         
-        raw_analysis = response.choices[0].message.content
+        raw_analysis = message.content[0].text
         formatted_analysis = format_plant_analysis(raw_analysis)
         
         return {
             "success": True,
             "analysis": formatted_analysis,
-            "raw_analysis": raw_analysis
+            "raw_analysis": raw_analysis,
+            "source": "claude"
         }
         
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        print(f"Claude API error: {e}")
+        return await fallback_plant_analysis(user_question)
+
+# Обновленный анализ растения с несколькими попытками
+async def analyze_plant_image(image_data: bytes, user_question: str = None) -> dict:
+    """Анализ изображения растения с несколькими вариантами API"""
+    
+    # Попытка 1: OpenAI с улучшенным промптом
+    if openai_client:
+        try:
+            optimized_image = await optimize_image(image_data)
+            base64_image = base64.b64encode(optimized_image).decode('utf-8')
+            
+            # Более нейтральный промпт, фокус на советах по уходу
+            prompt = """
+            Вы - эксперт по уходу за комнатными растениями. На изображении показано домашнее растение. 
+            Предоставьте практические рекомендации по уходу в следующем формате:
+
+            РАСТЕНИЕ: [тип растения на основе видимых характеристик листьев и формы]
+            СОСТОЯНИЕ: [общая оценка внешнего вида и здоровья]  
+            ПОЛИВ: [рекомендации по режиму полива]
+            СВЕТ: [потребности в освещении]
+            ТЕМПЕРАТУРА: [оптимальные условия содержания]
+            СОВЕТ: [один ключевой совет по улучшению ухода]
+
+            Сосредоточьтесь на практических советах по уходу за растением.
+            Отвечайте кратко и четко на русском языке.
+            """
+            
+            if user_question:
+                prompt += f"\n\nДополнительно ответьте на вопрос: {user_question}"
+            
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}",
+                                    "detail": "low"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=600,
+                temperature=0.3
+            )
+            
+            raw_analysis = response.choices[0].message.content
+            
+            # Проверяем, не отказался ли OpenAI
+            if "sorry" in raw_analysis.lower() or "can't help" in raw_analysis.lower():
+                raise Exception("OpenAI refused to analyze")
+            
+            formatted_analysis = format_plant_analysis(raw_analysis)
+            
+            return {
+                "success": True,
+                "analysis": formatted_analysis,
+                "raw_analysis": raw_analysis,
+                "source": "openai"
+            }
+            
+        except Exception as e:
+            print(f"OpenAI API error: {e}")
+    
+    # Попытка 2: Plant.id API
+    if PLANTID_API_KEY:
+        result = await analyze_with_plantid(image_data)
+        if result["success"] and not result.get("fallback"):
+            return result
+    
+    # Попытка 3: Claude API  
+    if CLAUDE_API_KEY:
+        result = await analyze_with_claude(image_data, user_question)
+        if result["success"] and not result.get("fallback"):
+            return result
+    
+    # Запасной вариант с общими советами
+    return await fallback_plant_analysis(user_question)
 
 # Обработчики команд
 @dp.message(Command("start"))
@@ -282,17 +469,29 @@ async def handle_photo(message: types.Message):
                 "analysis": result.get("raw_analysis", result["analysis"]),
                 "formatted_analysis": result["analysis"],
                 "photo_file_id": photo.file_id,
-                "date": datetime.now()
+                "date": datetime.now(),
+                "source": result.get("source", "fallback")
             }
+            
+            # Показываем источник анализа если не fallback
+            source_text = ""
+            if result.get("source") == "openai":
+                source_text = "\n\n🤖 <i>Анализ выполнен с помощью ИИ</i>"
+            elif result.get("source") == "plantid":
+                source_text = "\n\n🌿 <i>Анализ выполнен Plant.id</i>"
+            elif result.get("source") == "claude":
+                source_text = "\n\n🧠 <i>Анализ выполнен Claude AI</i>"
+            elif result.get("fallback"):
+                source_text = "\n\n💡 <i>Показаны общие рекомендации по уходу</i>"
             
             # Отправляем красиво отформатированный результат
             await message.reply(
-                f"🌱 <b>Анализ растения:</b>\n\n{result['analysis']}",
+                f"🌱 <b>Анализ растения:</b>\n\n{result['analysis']}{source_text}",
                 parse_mode="HTML",
                 reply_markup=after_analysis()
             )
         else:
-            await message.reply(f"❌ Ошибка анализа: {result['error']}")
+            await message.reply(f"❌ Ошибка анализа: {result.get('error', 'Неизвестная ошибка')}")
             
     except Exception as e:
         print(f"Ошибка обработки фото: {e}")
@@ -316,37 +515,76 @@ async def handle_question(message: types.Message, state: FSMContext):
     try:
         processing_msg = await message.reply("🤔 Думаю над ответом...")
         
-        # Обращаемся к OpenAI
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Ты эксперт по растениям и цветам. Отвечай подробно и практично на русском языке. Используй эмодзи для наглядности."
-                },
-                {
-                    "role": "user",
-                    "content": message.text
-                }
-            ],
-            max_tokens=800,
-            temperature=0.4
-        )
+        # Пробуем разные API для ответа на вопрос
+        answer = None
+        
+        # Попытка 1: OpenAI
+        if openai_client:
+            try:
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Ты эксперт по растениям и цветам. Отвечай подробно и практично на русском языке. Используй эмодзи для наглядности."
+                        },
+                        {
+                            "role": "user",
+                            "content": message.text
+                        }
+                    ],
+                    max_tokens=800,
+                    temperature=0.4
+                )
+                answer = response.choices[0].message.content
+            except Exception as e:
+                print(f"OpenAI question error: {e}")
+        
+        # Попытка 2: Claude API
+        if not answer and CLAUDE_API_KEY:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+                
+                response = client.messages.create(
+                    model="claude-3-sonnet-20240229",
+                    max_tokens=800,
+                    messages=[
+                        {
+                            "role": "user", 
+                            "content": f"Ты эксперт по растениям. Ответь подробно и практично на русском языке на вопрос: {message.text}"
+                        }
+                    ]
+                )
+                answer = response.content[0].text
+            except Exception as e:
+                print(f"Claude question error: {e}")
         
         await processing_msg.delete()
         
-        answer = response.choices[0].message.content
+        if answer:
+            # Добавляем эмодзи если их нет
+            if not any(char in answer for char in ["🌿", "💧", "☀️", "🌡️", "💡"]):
+                answer = f"🌿 <b>Ответ эксперта:</b>\n\n{answer}"
+            
+            await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
+        else:
+            # Запасной ответ
+            await message.reply(
+                "🤔 К сожалению, не могу ответить на ваш вопрос прямо сейчас.\n\n"
+                "💡 Рекомендуем:\n"
+                "• Обратиться в садовый центр\n" 
+                "• Поискать информацию в справочниках\n"
+                "• Сфотографировать растение для анализа\n\n"
+                "Попробуйте задать вопрос позже!",
+                reply_markup=main_menu()
+            )
         
-        # Добавляем эмодзи если их нет
-        if not any(char in answer for char in ["🌿", "💧", "☀️", "🌡️", "💡"]):
-            answer = f"🌿 <b>Ответ эксперта:</b>\n\n{answer}"
-        
-        await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
         await state.clear()
         
     except Exception as e:
         print(f"Ошибка ответа на вопрос: {e}")
-        await message.reply("❌ Произошла ошибка. Попробуйте позже.")
+        await message.reply("❌ Произошла ошибка. Попробуйте позже.", reply_markup=main_menu())
         await state.clear()
 
 @dp.callback_query(F.data == "save_plant")
@@ -370,78 +608,6 @@ async def save_plant_callback(callback: types.CallbackQuery):
             del temp_analyses[user_id]
             
             await callback.message.answer(
-                "✅ <b>Растение сохранено!</b>\n\n"
-                "🌱 Теперь вы можете:\n"
-                "• Отмечать полив\n"
-                "• Просматривать историю ухода\n"
-                "• Получать напоминания\n\n"
-                "Перейдите в 'Мои растения' чтобы увидеть коллекцию!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            
-        except Exception as e:
-            print(f"Ошибка сохранения растения: {e}")
-            await callback.message.answer("❌ Ошибка сохранения. Попробуйте позже.")
-    else:
-        await callback.message.answer("❌ Нет данных для сохранения. Сначала проанализируйте растение.")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "my_plants")
-async def my_plants_callback(callback: types.CallbackQuery):
-    """Просмотр сохраненных растений"""
-    user_id = callback.from_user.id
-    
-    try:
-        db = await get_db()
-        plants = await db.get_user_plants(user_id, limit=5)
-        
-        if not plants:
-            await callback.message.answer(
-                "🌱 <b>У вас пока нет растений</b>\n\n"
-                "📸 Пришлите фото растения для анализа и сохранения в коллекцию!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            await callback.answer()
-            return
-        
-        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
-        
-        for i, plant in enumerate(plants, 1):
-            # Извлекаем название растения из анализа
-            plant_name = f"Растение #{plant['id']}"
-            if plant.get('plant_name'):
-                plant_name = plant['plant_name']
-            elif "РАСТЕНИЕ:" in str(plant['analysis']):
-                lines = plant['analysis'].split('\n')
-                for line in lines:
-                    if line.startswith("РАСТЕНИЕ:"):
-                        plant_name = line.replace("РАСТЕНИЕ:", "").strip()
-                        break
-            
-            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
-            
-            if plant["last_watered"]:
-                watered = plant["last_watered"].strftime("%d.%m")
-                water_icon = "💧"
-            else:
-                watered = "не поливали"
-                water_icon = "🌵"
-            
-            text += f"{i}. 🌱 <b>{plant_name}</b>\n"
-            text += f"   📅 Добавлено: {saved_date}\n"
-            text += f"   {water_icon} Полив: {watered}\n\n"
-        
-        # Кнопки для действий с растениями
-        keyboard = [
-            [InlineKeyboardButton(text="💧 Отметить полив всех", callback_data="water_plants")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-        ]
-        
-        await callback.message.answer(
             text, 
             parse_mode="HTML", 
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -624,3 +790,75 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+                "✅ <b>Растение сохранено!</b>\n\n"
+                "🌱 Теперь вы можете:\n"
+                "• Отмечать полив\n"
+                "• Просматривать историю ухода\n"
+                "• Получать напоминания\n\n"
+                "Перейдите в 'Мои растения' чтобы увидеть коллекцию!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            
+        except Exception as e:
+            print(f"Ошибка сохранения растения: {e}")
+            await callback.message.answer("❌ Ошибка сохранения. Попробуйте позже.")
+    else:
+        await callback.message.answer("❌ Нет данных для сохранения. Сначала проанализируйте растение.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_plants")
+async def my_plants_callback(callback: types.CallbackQuery):
+    """Просмотр сохраненных растений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=5)
+        
+        if not plants:
+            await callback.message.answer(
+                "🌱 <b>У вас пока нет растений</b>\n\n"
+                "📸 Пришлите фото растения для анализа и сохранения в коллекцию!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            await callback.answer()
+            return
+        
+        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
+        
+        for i, plant in enumerate(plants, 1):
+            # Извлекаем название растения из анализа
+            plant_name = f"Растение #{plant['id']}"
+            if plant.get('plant_name'):
+                plant_name = plant['plant_name']
+            elif "РАСТЕНИЕ:" in str(plant['analysis']):
+                lines = plant['analysis'].split('\n')
+                for line in lines:
+                    if line.startswith("РАСТЕНИЕ:"):
+                        plant_name = line.replace("РАСТЕНИЕ:", "").strip()
+                        break
+            
+            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+            
+            if plant["last_watered"]:
+                watered = plant["last_watered"].strftime("%d.%m")
+                water_icon = "💧"
+            else:
+                watered = "не поливали"
+                water_icon = "🌵"
+            
+            text += f"{i}. 🌱 <b>{plant_name}</b>\n"
+            text += f"   📅 Добавлено: {saved_date}\n"
+            text += f"   {water_icon} Полив: {watered}\n\n"
+        
+        # Кнопки для действий с растениями
+        keyboard = [
+            [InlineKeyboardButton(text="💧 Отметить полив всех", callback_data="water_plants")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await callback.message.answer(
