@@ -608,6 +608,78 @@ async def save_plant_callback(callback: types.CallbackQuery):
             del temp_analyses[user_id]
             
             await callback.message.answer(
+                "✅ <b>Растение сохранено!</b>\n\n"
+                "🌱 Теперь вы можете:\n"
+                "• Отмечать полив\n"
+                "• Просматривать историю ухода\n"
+                "• Получать напоминания\n\n"
+                "Перейдите в 'Мои растения' чтобы увидеть коллекцию!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            
+        except Exception as e:
+            print(f"Ошибка сохранения растения: {e}")
+            await callback.message.answer("❌ Ошибка сохранения. Попробуйте позже.")
+    else:
+        await callback.message.answer("❌ Нет данных для сохранения. Сначала проанализируйте растение.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_plants")
+async def my_plants_callback(callback: types.CallbackQuery):
+    """Просмотр сохраненных растений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=5)
+        
+        if not plants:
+            await callback.message.answer(
+                "🌱 <b>У вас пока нет растений</b>\n\n"
+                "📸 Пришлите фото растения для анализа и сохранения в коллекцию!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            await callback.answer()
+            return
+        
+        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
+        
+        for i, plant in enumerate(plants, 1):
+            # Извлекаем название растения из анализа
+            plant_name = f"Растение #{plant['id']}"
+            if plant.get('plant_name'):
+                plant_name = plant['plant_name']
+            elif "РАСТЕНИЕ:" in str(plant['analysis']):
+                lines = plant['analysis'].split('\n')
+                for line in lines:
+                    if line.startswith("РАСТЕНИЕ:"):
+                        plant_name = line.replace("РАСТЕНИЕ:", "").strip()
+                        break
+            
+            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+            
+            if plant["last_watered"]:
+                watered = plant["last_watered"].strftime("%d.%m")
+                water_icon = "💧"
+            else:
+                watered = "не поливали"
+                water_icon = "🌵"
+            
+            text += f"{i}. 🌱 <b>{plant_name}</b>\n"
+            text += f"   📅 Добавлено: {saved_date}\n"
+            text += f"   {water_icon} Полив: {watered}\n\n"
+        
+        # Кнопки для действий с растениями
+        keyboard = [
+            [InlineKeyboardButton(text="💧 Отметить полив всех", callback_data="water_plants")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await callback.message.answer(
             text, 
             parse_mode="HTML", 
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -719,6 +791,7 @@ async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
 
 # Webhook setup для Railway
 async def on_startup():
+    """Инициализация при запуске"""
     # Инициализируем базу данных
     await init_database()
     
@@ -730,32 +803,49 @@ async def on_startup():
         print("Webhook удален, используется polling")
 
 async def on_shutdown():
+    """Очистка при завершении"""
     # Закрываем соединения с БД
-    db = await get_db()
-    await db.close()
-    await bot.session.close()
+    try:
+        db = await get_db()
+        await db.close()
+    except Exception as e:
+        print(f"Ошибка закрытия БД: {e}")
+    
+    # Закрываем сессию бота
+    try:
+        await bot.session.close()
+    except Exception as e:
+        print(f"Ошибка закрытия сессии бота: {e}")
 
 # Webhook handler
 async def webhook_handler(request):
-    url = str(request.url)
-    index = url.rfind('/')
-    token = url[index + 1:]
-    
-    if token == BOT_TOKEN.split(':')[1]:  # Простая проверка токена
-        update = types.Update.model_validate(await request.json(), strict=False)
-        await dp.feed_update(bot, update)
-        return web.Response()
-    else:
-        return web.Response(status=403)
+    """Обработчик webhook запросов"""
+    try:
+        url = str(request.url)
+        index = url.rfind('/')
+        token = url[index + 1:]
+        
+        if token == BOT_TOKEN.split(':')[1]:  # Простая проверка токена
+            update = types.Update.model_validate(await request.json(), strict=False)
+            await dp.feed_update(bot, update)
+            return web.Response()
+        else:
+            return web.Response(status=403)
+    except Exception as e:
+        print(f"Ошибка webhook: {e}")
+        return web.Response(status=500)
 
 # Health check для Railway
 async def health_check(request):
+    """Проверка здоровья сервиса"""
     return web.json_response({"status": "healthy", "bot": "Bloom AI Plant Care Assistant"})
 
 # Главная функция
 async def main():
+    """Основная функция запуска бота"""
     logging.basicConfig(level=logging.INFO)
     
+    # Инициализация
     await on_startup()
     
     if WEBHOOK_URL:
@@ -763,6 +853,7 @@ async def main():
         app = web.Application()
         app.router.add_post('/webhook', webhook_handler)
         app.router.add_get('/health', health_check)
+        app.router.add_get('/', health_check)  # Дополнительный health check
         
         runner = web.AppRunner(app)
         await runner.setup()
@@ -774,9 +865,9 @@ async def main():
         
         # Держим сервер работающим
         try:
-            await asyncio.Future()
+            await asyncio.Future()  # Ожидаем бесконечно
         except KeyboardInterrupt:
-            pass
+            print("🛑 Получен сигнал остановки")
         finally:
             await runner.cleanup()
             await on_shutdown()
@@ -784,81 +875,16 @@ async def main():
         # Polling режим для разработки
         print("🤖 Бот запущен в режиме polling")
         try:
-            await dp.start_polling(bot)
+            await dp.start_polling(bot, drop_pending_updates=True)
+        except KeyboardInterrupt:
+            print("🛑 Получен сигнал остановки")
         finally:
             await on_shutdown()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-                "✅ <b>Растение сохранено!</b>\n\n"
-                "🌱 Теперь вы можете:\n"
-                "• Отмечать полив\n"
-                "• Просматривать историю ухода\n"
-                "• Получать напоминания\n\n"
-                "Перейдите в 'Мои растения' чтобы увидеть коллекцию!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            
-        except Exception as e:
-            print(f"Ошибка сохранения растения: {e}")
-            await callback.message.answer("❌ Ошибка сохранения. Попробуйте позже.")
-    else:
-        await callback.message.answer("❌ Нет данных для сохранения. Сначала проанализируйте растение.")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "my_plants")
-async def my_plants_callback(callback: types.CallbackQuery):
-    """Просмотр сохраненных растений"""
-    user_id = callback.from_user.id
-    
     try:
-        db = await get_db()
-        plants = await db.get_user_plants(user_id, limit=5)
-        
-        if not plants:
-            await callback.message.answer(
-                "🌱 <b>У вас пока нет растений</b>\n\n"
-                "📸 Пришлите фото растения для анализа и сохранения в коллекцию!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            await callback.answer()
-            return
-        
-        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
-        
-        for i, plant in enumerate(plants, 1):
-            # Извлекаем название растения из анализа
-            plant_name = f"Растение #{plant['id']}"
-            if plant.get('plant_name'):
-                plant_name = plant['plant_name']
-            elif "РАСТЕНИЕ:" in str(plant['analysis']):
-                lines = plant['analysis'].split('\n')
-                for line in lines:
-                    if line.startswith("РАСТЕНИЕ:"):
-                        plant_name = line.replace("РАСТЕНИЕ:", "").strip()
-                        break
-            
-            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
-            
-            if plant["last_watered"]:
-                watered = plant["last_watered"].strftime("%d.%m")
-                water_icon = "💧"
-            else:
-                watered = "не поливали"
-                water_icon = "🌵"
-            
-            text += f"{i}. 🌱 <b>{plant_name}</b>\n"
-            text += f"   📅 Добавлено: {saved_date}\n"
-            text += f"   {water_icon} Полив: {watered}\n\n"
-        
-        # Кнопки для действий с растениями
-        keyboard = [
-            [InlineKeyboardButton(text="💧 Отметить полив всех", callback_data="water_plants")],
-            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-        ]
-        
-        await callback.message.answer(
+        asyncio.run(main())
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+    except KeyboardInterrupt:
+        print("🛑 Принудительная остановка")
