@@ -603,4 +603,617 @@ async def handle_photo(message: types.Message):
         # Получаем фото в лучшем качестве
         photo = message.photo[-1]  # Самое высокое разрешение
         file = await bot.get_file(photo.file_id)
-        file
+        file_data = await bot.download_file(file.file_path)
+        
+        # Обновляем статус анализа
+        await processing_msg.edit_text(
+            "🔍 <b>Анализирую ваше растение...</b>\n"
+            "🌿 Сравниваю с базой растений\n"
+            "📊 Оцениваю состояние здоровья",
+            parse_mode="HTML"
+        )
+        
+        # Анализируем с вопросом пользователя если есть
+        user_question = message.caption if message.caption else None
+        result = await analyze_plant_image(file_data.read(), user_question)
+        
+        await processing_msg.delete()
+        
+        if result["success"]:
+            # Сохраняем детальный анализ
+            user_id = message.from_user.id
+            temp_analyses[user_id] = {
+                "analysis": result.get("raw_analysis", result["analysis"]),
+                "formatted_analysis": result["analysis"],
+                "photo_file_id": photo.file_id,
+                "date": datetime.now(),
+                "source": result.get("source", "unknown"),
+                "plant_name": result.get("plant_name", "Неизвестное растение"),
+                "confidence": result.get("confidence", 0),
+                "needs_retry": result.get("needs_retry", False)
+            }
+            
+            # Показываем источник и качество анализа
+            source_text = ""
+            confidence = result.get("confidence", 0)
+            
+            if result.get("source") == "openai_advanced":
+                source_text = f"\n\n🤖 <i>Анализ ИИ-ботаника (GPT-4 Vision)</i>"
+            elif result.get("source") == "plantid_advanced":
+                source_text = f"\n\n🌿 <i>Анализ Plant.id Database</i>"
+            elif result.get("source") == "fallback_improved":
+                source_text = f"\n\n💡 <i>Общие рекомендации - попробуйте повторить фото</i>"
+            
+            # Добавляем рекомендации по улучшению фото если нужно
+            retry_text = ""
+            if result.get("needs_retry"):
+                retry_text = ("\n\n📸 <b>Для лучшего результата:</b>\n"
+                            "• Сфотографируйте при ярком освещении\n"
+                            "• Покажите листья крупным планом\n"
+                            "• Уберите лишние предметы из кадра")
+            
+            # Отправляем результат
+            response_text = f"🌱 <b>Результат анализа:</b>\n\n{result['analysis']}{source_text}{retry_text}"
+            
+            # Выбираем клавиатуру в зависимости от качества анализа
+            if result.get("needs_retry"):
+                keyboard = [
+                    [InlineKeyboardButton(text="🔄 Повторить фото", callback_data="reanalyze")],
+                    [InlineKeyboardButton(text="💾 Сохранить как есть", callback_data="save_plant")],
+                    [InlineKeyboardButton(text="❓ Задать вопрос", callback_data="ask_about")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+                ]
+                reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+            else:
+                reply_markup = after_analysis()
+            
+            await message.reply(
+                response_text,
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+        else:
+            error_msg = result.get('error', 'Неизвестная ошибка')
+            await message.reply(
+                f"❌ <b>Ошибка анализа:</b> {error_msg}\n\n"
+                f"🔄 Попробуйте:\n"
+                f"• Сделать фото при лучшем освещении\n"
+                f"• Показать растение целиком\n"
+                f"• Повторить попытку через минуту",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            
+    except Exception as e:
+        print(f"Ошибка обработки фото: {e}")
+        await message.reply(
+            "❌ Произошла техническая ошибка при анализе.\n"
+            "🔄 Пожалуйста, попробуйте позже или обратитесь в поддержку.",
+            reply_markup=main_menu()
+        )
+
+# Callback обработчики
+@dp.callback_query(F.data == "analyze")
+async def analyze_callback(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "📸 <b>Отправьте фото растения для анализа</b>\n\n"
+        "💡 <b>Советы для лучшего результата:</b>\n"
+        "• Фотографируйте при дневном свете\n"
+        "• Покажите листья и общий вид растения\n" 
+        "• Избегайте размытых и тёмных снимков\n"
+        "• Можете добавить вопрос в описании к фото",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "reanalyze")
+async def reanalyze_callback(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "📸 <b>Повторный анализ</b>\n\n"
+        "Пришлите новое фото растения для более точного определения:\n\n"
+        "🎯 <b>Рекомендации:</b>\n"
+        "• Используйте естественное освещение\n"
+        "• Сфотографируйте листья крупным планом\n"
+        "• Покажите характерные особенности растения\n"
+        "• Уберите из кадра посторонние предметы",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "question")
+async def question_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer(
+        "❓ <b>Задайте ваш вопрос о растениях</b>\n\n"
+        "💡 <b>Я могу помочь с:</b>\n"
+        "• Проблемами с листьями (желтеют, сохнут, опадают)\n"
+        "• Режимом полива и подкормки\n" 
+        "• Пересадкой и размножением\n"
+        "• Болезнями и вредителями\n"
+        "• Выбором места для растения\n"
+        "• Любыми другими вопросами по уходу",
+        parse_mode="HTML"
+    )
+    await state.set_state(PlantStates.waiting_question)
+    await callback.answer()
+
+# Улучшенная обработка вопросов
+@dp.message(StateFilter(PlantStates.waiting_question))
+async def handle_question(message: types.Message, state: FSMContext):
+    """Обработка текстовых вопросов с улучшенным контекстом"""
+    try:
+        processing_msg = await message.reply("🤔 <b>Консультируюсь с экспертом...</b>", parse_mode="HTML")
+        
+        user_id = message.from_user.id
+        user_context = ""
+        
+        # Добавляем контекст из последнего анализа если есть
+        if user_id in temp_analyses:
+            plant_info = temp_analyses[user_id]
+            plant_name = plant_info.get("plant_name", "растение")
+            user_context = f"\n\nКонтекст: Пользователь недавно анализировал {plant_name}. Учтите это в ответе."
+        
+        answer = None
+        
+        # Улучшенный промпт для OpenAI
+        if openai_client:
+            try:
+                enhanced_prompt = f"""
+Вы - ведущий эксперт по комнатным и садовым растениям с 30-летним опытом.
+Ответьте подробно и практично на вопрос пользователя о растениях.
+
+Структура ответа:
+1. Краткий диагноз/ответ на вопрос
+2. Подробные рекомендации по решению
+3. Дополнительные советы по профилактике
+4. При необходимости - когда обращаться к специалисту
+
+Используйте эмодзи для наглядности.
+Давайте конкретные, применимые советы.
+{user_context}
+
+Вопрос: {message.text}
+                """
+                
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Вы - профессиональный ботаник и консультант по растениям. Отвечайте экспертно, но доступным языком на русском."
+                        },
+                        {
+                            "role": "user",
+                            "content": enhanced_prompt
+                        }
+                    ],
+                    max_tokens=1000,
+                    temperature=0.3
+                )
+                answer = response.choices[0].message.content
+            except Exception as e:
+                print(f"OpenAI question error: {e}")
+        
+        await processing_msg.delete()
+        
+        if answer and len(answer) > 50:
+            # Улучшаем форматирование ответа
+            if not answer.startswith(('🌿', '💡', '🔍', '⚠️', '✅')):
+                answer = f"🌿 <b>Экспертный ответ:</b>\n\n{answer}"
+            
+            await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
+        else:
+            # Улучшенный fallback
+            fallback_answer = f"""
+🤔 <b>По вашему вопросу:</b> "{message.text}"
+
+К сожалению, сейчас не могу дать полный экспертный ответ. 
+
+💡 <b>Рекомендую:</b>
+• Сфотографируйте растение для точной диагностики
+• Опишите симптомы более подробно
+• Обратитесь в ботанический сад или садовый центр
+• Попробуйте переформулировать вопрос
+
+🌱 <b>Общие советы:</b>
+• Проверьте освещение и полив
+• Осмотрите листья на предмет вредителей  
+• Убедитесь в подходящей влажности воздуха
+
+Попробуйте задать вопрос позже или пришлите фото для анализа!
+            """
+            
+            await message.reply(fallback_answer, parse_mode="HTML", reply_markup=main_menu())
+        
+        await state.clear()
+        
+    except Exception as e:
+        print(f"Ошибка ответа на вопрос: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при обработке вопроса.\n"
+            "🔄 Попробуйте переформулировать или задать вопрос позже.", 
+            reply_markup=main_menu()
+        )
+        await state.clear()
+
+@dp.callback_query(F.data == "save_plant")
+async def save_plant_callback(callback: types.CallbackQuery):
+    """Сохранение растения с улучшенной информацией"""
+    user_id = callback.from_user.id
+    
+    if user_id in temp_analyses:
+        try:
+            analysis_data = temp_analyses[user_id]
+            
+            # Сохраняем в БД с дополнительной информацией
+            db = await get_db()
+            plant_id = await db.save_plant(
+                user_id=user_id,
+                analysis=analysis_data["analysis"],
+                photo_file_id=analysis_data["photo_file_id"],
+                plant_name=analysis_data.get("plant_name", "Неизвестное растение")
+            )
+            
+            # Удаляем временные данные
+            del temp_analyses[user_id]
+            
+            confidence = analysis_data.get("confidence", 0)
+            plant_name = analysis_data.get("plant_name", "растение")
+            
+            success_text = f"✅ <b>Растение сохранено!</b>\n\n"
+            success_text += f"🌱 <b>{plant_name}</b> добавлено в вашу коллекцию\n"
+            
+            if confidence >= 80:
+                success_text += f"🎯 Высокая точность распознавания ({confidence:.0f}%)\n\n"
+            elif confidence >= 60:
+                success_text += f"👍 Хорошее распознавание ({confidence:.0f}%)\n\n" 
+            else:
+                success_text += f"💡 Для уточнения можете добавить новое фото позже\n\n"
+            
+            success_text += (
+                "🌿 <b>Теперь вы можете:</b>\n"
+                "• Отмечать полив и уход\n"
+                "• Просматривать историю растения\n"
+                "• Получать персональные напоминания\n"
+                "• Задавать вопросы об этом растении\n\n"
+                "Перейдите в 'Мои растения' чтобы управлять коллекцией!"
+            )
+            
+            await callback.message.answer(
+                success_text,
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            
+        except Exception as e:
+            print(f"Ошибка сохранения растения: {e}")
+            await callback.message.answer("❌ Ошибка сохранения. Попробуйте позже.")
+    else:
+        await callback.message.answer("❌ Нет данных для сохранения. Сначала проанализируйте растение.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "my_plants")
+async def my_plants_callback(callback: types.CallbackQuery):
+    """Просмотр сохраненных растений с улучшенной информацией"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=5)
+        
+        if not plants:
+            await callback.message.answer(
+                "🌱 <b>Ваша коллекция пуста</b>\n\n"
+                "📸 Сфотографируйте растение для:\n"
+                "• Точного определения вида\n"
+                "• Персональных рекомендаций по уходу\n"
+                "• Напоминаний о поливе\n"
+                "• Отслеживания состояния здоровья\n\n"
+                "Начните создавать свой цифровой сад!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            await callback.answer()
+            return
+        
+        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
+        
+        for i, plant in enumerate(plants, 1):
+            # Используем сохраненное название или извлекаем из анализа
+            plant_name = plant.get('plant_name') or f"Растение #{plant['id']}"
+            if not plant.get('plant_name') and "РАСТЕНИЕ:" in str(plant['analysis']):
+                lines = plant['analysis'].split('\n')
+                for line in lines:
+                    if line.startswith("РАСТЕНИЕ:"):
+                        extracted_name = line.replace("РАСТЕНИЕ:", "").strip()
+                        if len(extracted_name) < 50:  # Разумная длина
+                            plant_name = extracted_name.split("(")[0].strip()
+                        break
+            
+            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+            
+            # Более информативный статус полива
+            if plant["last_watered"]:
+                watered = plant["last_watered"].strftime("%d.%m")
+                days_ago = (datetime.now() - plant["last_watered"]).days
+                if days_ago == 0:
+                    water_status = "💧 Полито сегодня"
+                elif days_ago == 1:
+                    water_status = "💧 Полито вчера"
+                elif days_ago <= 3:
+                    water_status = f"💧 Полито {days_ago} дня назад"
+                elif days_ago <= 7:
+                    water_status = f"🌊 Полито {days_ago} дней назад"
+                else:
+                    water_status = f"🌵 Давно не поливали ({days_ago} дней)"
+            else:
+                water_status = "🆕 Еще не поливали"
+            
+            text += f"{i}. 🌱 <b>{plant_name}</b>\n"
+            text += f"   📅 Добавлено: {saved_date}\n"
+            text += f"   {water_status}\n\n"
+        
+        # Улучшенные кнопки управления
+        keyboard = [
+            [InlineKeyboardButton(text="💧 Отметить полив всех", callback_data="water_plants")],
+            [InlineKeyboardButton(text="📊 Подробная статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await callback.message.answer(
+            text, 
+            parse_mode="HTML", 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка загрузки растений: {e}")
+        await callback.message.answer("❌ Ошибка загрузки коллекции растений.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "water_plants")
+async def water_plants_callback(callback: types.CallbackQuery):
+    """Отметка полива с улучшенной обратной связью"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        await db.update_watering(user_id)
+        
+        current_time = datetime.now().strftime("%d.%m.%Y в %H:%M")
+        
+        await callback.message.answer(
+            f"💧 <b>Отлично! Полив отмечен</b>\n\n"
+            f"🌱 Все растения в коллекции политы {current_time}\n\n"
+            f"📅 <b>Рекомендации по следующему поливу:</b>\n"
+            f"• Большинство комнатных растений: 3-7 дней\n"
+            f"• Суккуленты и кактусы: 7-14 дней\n"
+            f"• Орхидеи: 5-10 дней\n"
+            f"• Папоротники: 2-4 дня\n\n"
+            f"💡 <b>Помните:</b> Проверяйте влажность почвы пальцем!\n"
+            f"🌡️ В жару поливайте чаще, зимой - реже",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка отметки полива: {e}")
+        await callback.message.answer("❌ Ошибка отметки полива.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "stats")
+async def stats_callback(callback: types.CallbackQuery):
+    """Подробная статистика пользователя"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        stats = await db.get_user_stats(user_id)
+        
+        text = f"📊 <b>Подробная статистика вашего сада:</b>\n\n"
+        
+        # Основные показатели
+        text += f"🌱 <b>Растений в коллекции:</b> {stats['total_plants']}\n"
+        
+        if stats['total_plants'] > 0:
+            watered_count = stats['watered_plants']
+            watered_percent = int((watered_count / stats['total_plants']) * 100)
+            
+            # Статус ухода
+            if watered_percent == 100:
+                care_status = "🏆 Превосходный уход!"
+                care_icon = "🏆"
+            elif watered_percent >= 80:
+                care_status = "⭐ Отличный уход!"  
+                care_icon = "⭐"
+            elif watered_percent >= 60:
+                care_status = "👍 Хороший уход"
+                care_icon = "👍"
+            elif watered_percent >= 40:
+                care_status = "💪 Можно лучше"
+                care_icon = "💪"
+            else:
+                care_status = "🌵 Нужно больше внимания"
+                care_icon = "🌵"
+            
+            text += f"💧 <b>Политых растений:</b> {watered_count} из {stats['total_plants']} ({watered_percent}%)\n"
+            text += f"{care_icon} <b>Оценка ухода:</b> {care_status}\n\n"
+            
+            # Временные показатели
+            if stats['first_plant_date']:
+                first_date = stats['first_plant_date'].strftime("%d.%m.%Y")
+                days_gardening = (datetime.now() - stats['first_plant_date']).days
+                text += f"📅 <b>Садовничаете с:</b> {first_date} ({days_gardening} дней)\n"
+            
+            if stats['last_watered_date']:
+                last_watered = stats['last_watered_date'].strftime("%d.%m.%Y")
+                days_since_watering = (datetime.now().date() - stats['last_watered_date'].date()).days
+                if days_since_watering == 0:
+                    text += f"💧 <b>Последний полив:</b> сегодня\n"
+                elif days_since_watering == 1:
+                    text += f"💧 <b>Последний полив:</b> вчера\n"
+                else:
+                    text += f"💧 <b>Последний полив:</b> {days_since_watering} дней назад\n"
+            
+            # Рекомендации
+            text += f"\n💡 <b>Рекомендации:</b>\n"
+            if watered_percent == 100:
+                text += f"• Отличная работа! Продолжайте в том же духе\n"
+                text += f"• Не забывайте проверять состояние листьев\n"
+                text += f"• Подумайте о добавлении новых растений"
+            elif watered_percent >= 70:
+                text += f"• Хорошо справляетесь с уходом\n"
+                text += f"• Обратите внимание на не политые растения\n"
+                text += f"• Следите за регулярностью полива"
+            else:
+                text += f"• Уделите больше внимания поливу\n"
+                text += f"• Установите напоминания\n"
+                text += f"• Проверьте состояние всех растений"
+        else:
+            text += f"\n🌟 <b>Добро пожаловать в мир растений!</b>\n"
+            text += f"• Сфотографируйте свое первое растение\n"
+            text += f"• Получите персональные рекомендации\n"
+            text += f"• Начните вести цифровой дневник ухода"
+        
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=main_menu())
+        
+    except Exception as e:
+        print(f"Ошибка загрузки статистики: {e}")
+        await callback.message.answer("❌ Ошибка загрузки статистики.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "menu")
+async def menu_callback(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "🌱 <b>Главное меню</b>\n\n"
+        "Выберите действие:",
+        parse_mode="HTML", 
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "ask_about")
+async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Вопрос о проанализированном растении"""
+    user_id = callback.from_user.id
+    
+    if user_id in temp_analyses:
+        plant_name = temp_analyses[user_id].get("plant_name", "растении")
+        await callback.message.answer(
+            f"❓ <b>Вопрос о {plant_name}</b>\n\n"
+            f"💡 <b>Популярные вопросы:</b>\n"
+            f"• Почему желтеют/сохнут листья?\n"
+            f"• Как часто поливать это растение?\n"
+            f"• Нужна ли пересадка?\n"
+            f"• Почему не растет/не цветёт?\n"
+            f"• Как размножить это растение?\n"
+            f"• Какие удобрения использовать?\n\n"
+            f"✍️ Напишите ваш вопрос:",
+            parse_mode="HTML"
+        )
+        await state.set_state(PlantStates.waiting_question)
+    else:
+        await callback.message.answer(
+            "❌ Данные анализа не найдены.\n"
+            "📸 Сначала сфотографируйте растение для анализа."
+        )
+    
+    await callback.answer()
+
+# Webhook setup и остальной код остается без изменений
+async def on_startup():
+    """Инициализация при запуске"""
+    await init_database()
+    
+    if WEBHOOK_URL:
+        await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+        print(f"Webhook установлен: {WEBHOOK_URL}/webhook")
+    else:
+        await bot.delete_webhook(drop_pending_updates=True)
+        print("Webhook удален, используется polling")
+
+async def on_shutdown():
+    """Очистка при завершении"""
+    try:
+        db = await get_db()
+        await db.close()
+    except Exception as e:
+        print(f"Ошибка закрытия БД: {e}")
+    
+    try:
+        await bot.session.close()
+    except Exception as e:
+        print(f"Ошибка закрытия сессии бота: {e}")
+
+async def webhook_handler(request):
+    """Обработчик webhook запросов"""
+    try:
+        url = str(request.url)
+        index = url.rfind('/')
+        token = url[index + 1:]
+        
+        if token == BOT_TOKEN.split(':')[1]:
+            update = types.Update.model_validate(await request.json(), strict=False)
+            await dp.feed_update(bot, update)
+            return web.Response()
+        else:
+            return web.Response(status=403)
+    except Exception as e:
+        print(f"Ошибка webhook: {e}")
+        return web.Response(status=500)
+
+async def health_check(request):
+    """Проверка здоровья сервиса"""
+    return web.json_response({
+        "status": "healthy", 
+        "bot": "Bloom AI Plant Care Assistant", 
+        "version": "2.0",
+        "features": ["plant_identification", "health_assessment", "care_recommendations"]
+    })
+
+async def main():
+    """Основная функция запуска бота"""
+    logging.basicConfig(level=logging.INFO)
+    
+    await on_startup()
+    
+    if WEBHOOK_URL:
+        app = web.Application()
+        app.router.add_post('/webhook', webhook_handler)
+        app.router.add_get('/health', health_check)
+        app.router.add_get('/', health_check)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        
+        print(f"🚀 Bloom AI Plant Bot запущен на порту {PORT}")
+        print(f"🌱 Готов к точному распознаванию растений!")
+        
+        try:
+            await asyncio.Future()
+        except KeyboardInterrupt:
+            print("🛑 Получен сигнал остановки")
+        finally:
+            await runner.cleanup()
+            await on_shutdown()
+    else:
+        print("🤖 Бот запущен в режиме polling")
+        try:
+            await dp.start_polling(bot, drop_pending_updates=True)
+        except KeyboardInterrupt:
+            print("🛑 Получен сигнал остановки")
+        finally:
+            await on_shutdown()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+    except KeyboardInterrupt:
+        print("🛑 Принудительная остановка")
