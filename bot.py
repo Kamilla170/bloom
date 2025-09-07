@@ -68,6 +68,7 @@ PLANT_IDENTIFICATION_PROMPT = """
 # Состояния
 class PlantStates(StatesGroup):
     waiting_question = State()
+    editing_plant_name = State()
 
 # Клавиатуры
 def main_menu():
