@@ -1368,7 +1368,355 @@ async def health_check(request):
         "version": "2.0",
         "features": ["plant_identification", "health_assessment", "care_recommendations"]
     })
+# ДОБАВИТЬ В СОСТОЯНИЯ (в класс PlantStates):
+class PlantStates(StatesGroup):
+    waiting_question = State()
+    editing_plant_name = State()  # ДОБАВИТЬ ЭТУ СТРОКУ
 
+# ЗАМЕНИТЬ функцию my_plants_callback:
+@dp.callback_query(F.data == "my_plants")
+async def my_plants_callback(callback: types.CallbackQuery):
+    """Просмотр сохраненных растений с корректными названиями"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=10)
+        
+        if not plants:
+            await callback.message.answer(
+                "🌱 <b>Ваша коллекция пуста</b>\n\n"
+                "📸 Сфотографируйте растение для:\n"
+                "• Точного определения вида\n"
+                "• Персональных рекомендаций по уходу\n"
+                "• Напоминаний о поливе\n"
+                "• Отслеживания состояния здоровья\n\n"
+                "Начните создавать свой цифровой сад!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            await callback.answer()
+            return
+        
+        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
+        
+        keyboard_buttons = []
+        
+        for i, plant in enumerate(plants, 1):
+            # Используем display_name из БД
+            plant_name = plant['display_name']
+            saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+            
+            # Статус полива
+            if plant["last_watered"]:
+                days_ago = (datetime.now() - plant["last_watered"]).days
+                if days_ago == 0:
+                    water_status = "💧 Полито сегодня"
+                elif days_ago == 1:
+                    water_status = "💧 Полито вчера"
+                elif days_ago <= 3:
+                    water_status = f"💧 Полито {days_ago} дня назад"
+                elif days_ago <= 7:
+                    water_status = f"🌊 Полито {days_ago} дней назад"
+                else:
+                    water_status = f"🌵 Давно не поливали ({days_ago} дней)"
+            else:
+                water_status = "🆕 Еще не поливали"
+            
+            text += f"{i}. 🌱 <b>{plant_name}</b>\n"
+            text += f"   📅 Добавлено: {saved_date}\n"
+            text += f"   {water_status}\n\n"
+            
+            # Добавляем кнопки для каждого растения
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=f"✏️ {plant_name[:20]}{'...' if len(plant_name) > 20 else ''}", 
+                    callback_data=f"edit_plant_{plant['id']}"
+                )
+            ])
+        
+        # Общие кнопки управления
+        keyboard_buttons.extend([
+            [InlineKeyboardButton(text="💧 Отметить полив всех", callback_data="water_plants")],
+            [InlineKeyboardButton(text="📊 Подробная статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ])
+        
+        await callback.message.answer(
+            text, 
+            parse_mode="HTML", 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка загрузки растений: {e}")
+        await callback.message.answer("❌ Ошибка загрузки коллекции растений.")
+    
+    await callback.answer()
+
+# ДОБАВИТЬ новые обработчики:
+
+@dp.callback_query(F.data.startswith("edit_plant_"))
+async def edit_plant_callback(callback: types.CallbackQuery):
+    """Показать меню редактирования растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        plant_name = plant['display_name']
+        saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+        watered_count = plant.get('watering_count', 0)
+        
+        # Статус полива
+        if plant["last_watered"]:
+            last_watered = plant["last_watered"].strftime("%d.%m.%Y")
+            water_info = f"💧 Последний полив: {last_watered} (всего: {watered_count} раз)"
+        else:
+            water_info = "🆕 Еще не поливали"
+        
+        info_text = f"🌱 <b>{plant_name}</b>\n\n"
+        info_text += f"📅 Добавлено: {saved_date}\n"
+        info_text += f"{water_info}\n"
+        
+        if plant.get('notes'):
+            info_text += f"📝 Заметки: {plant['notes']}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"rename_plant_{plant_id}")],
+            [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
+            [InlineKeyboardButton(text="📷 Показать фото", callback_data=f"show_photo_{plant_id}")],
+            [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_plant_{plant_id}")],
+            [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")],
+        ]
+        
+        await callback.message.answer(
+            info_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка редактирования растения: {e}")
+        await callback.answer("❌ Ошибка обработки")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("rename_plant_"))
+async def rename_plant_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Начать процесс переименования растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        # Сохраняем ID растения в состояние
+        await state.update_data(editing_plant_id=plant_id)
+        await state.set_state(PlantStates.editing_plant_name)
+        
+        current_name = plant['display_name']
+        
+        await callback.message.answer(
+            f"✏️ <b>Переименование растения</b>\n\n"
+            f"Текущее название: <b>{current_name}</b>\n\n"
+            f"📝 Введите новое название:",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        print(f"Ошибка начала переименования: {e}")
+        await callback.answer("❌ Ошибка обработки")
+    
+    await callback.answer()
+
+@dp.message(StateFilter(PlantStates.editing_plant_name))
+async def handle_plant_rename(message: types.Message, state: FSMContext):
+    """Обработка нового названия растения"""
+    try:
+        new_name = message.text.strip()
+        
+        if len(new_name) < 2:
+            await message.reply("❌ Название слишком короткое. Минимум 2 символа.")
+            return
+        
+        if len(new_name) > 50:
+            await message.reply("❌ Название слишком длинное. Максимум 50 символов.")
+            return
+        
+        # Получаем ID растения из состояния
+        data = await state.get_data()
+        plant_id = data.get('editing_plant_id')
+        
+        if not plant_id:
+            await message.reply("❌ Ошибка: ID растения не найден")
+            await state.clear()
+            return
+        
+        user_id = message.from_user.id
+        
+        # Обновляем название в БД
+        db = await get_db()
+        await db.update_plant_name(plant_id, user_id, new_name)
+        
+        await message.reply(
+            f"✅ <b>Название изменено!</b>\n\n"
+            f"🌱 Новое название: <b>{new_name}</b>\n\n"
+            f"Растение обновлено в вашей коллекции.",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+        await state.clear()
+        
+    except Exception as e:
+        print(f"Ошибка переименования: {e}")
+        await message.reply("❌ Ошибка сохранения названия.")
+        await state.clear()
+
+@dp.callback_query(F.data.startswith("water_plant_"))
+async def water_single_plant_callback(callback: types.CallbackQuery):
+    """Полив отдельного растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        await db.update_watering(user_id, plant_id)
+        
+        current_time = datetime.now().strftime("%d.%m.%Y в %H:%M")
+        plant_name = plant['display_name']
+        
+        await callback.message.answer(
+            f"💧 <b>Полив отмечен!</b>\n\n"
+            f"🌱 <b>{plant_name}</b> полито {current_time}\n\n"
+            f"📅 Следующий полив рекомендуется через 3-7 дней\n"
+            f"💡 Проверяйте влажность почвы пальцем",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка полива растения: {e}")
+        await callback.answer("❌ Ошибка полива")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("show_photo_"))
+async def show_plant_photo_callback(callback: types.CallbackQuery):
+    """Показать фото растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        plant_name = plant['display_name']
+        saved_date = plant["saved_date"].strftime("%d.%m.%Y")
+        
+        await bot.send_photo(
+            chat_id=callback.message.chat.id,
+            photo=plant['photo_file_id'],
+            caption=f"📷 <b>{plant_name}</b>\n📅 Добавлено: {saved_date}",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 Назад", callback_data=f"edit_plant_{plant_id}")]
+            ])
+        )
+        
+    except Exception as e:
+        print(f"Ошибка показа фото: {e}")
+        await callback.answer("❌ Ошибка загрузки фото")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("delete_plant_"))
+async def delete_plant_callback(callback: types.CallbackQuery):
+    """Подтверждение удаления растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        plant_name = plant['display_name']
+        
+        keyboard = [
+            [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_{plant_id}")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit_plant_{plant_id}")],
+        ]
+        
+        await callback.message.answer(
+            f"🗑️ <b>Подтверждение удаления</b>\n\n"
+            f"Вы действительно хотите удалить <b>{plant_name}</b>?\n\n"
+            f"⚠️ Это действие нельзя отменить!",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка удаления растения: {e}")
+        await callback.answer("❌ Ошибка обработки")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("confirm_delete_"))
+async def confirm_delete_plant_callback(callback: types.CallbackQuery):
+    """Окончательное удаление растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        plant_name = plant['display_name']
+        await db.delete_plant(user_id, plant_id)
+        
+        await callback.message.answer(
+            f"🗑️ <b>Растение удалено</b>\n\n"
+            f"<b>{plant_name}</b> удалено из вашей коллекции.\n\n"
+            f"📸 Вы всегда можете добавить новое растение!",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+    except Exception as e:
+        print(f"Ошибка окончательного удаления: {e}")
+        await callback.answer("❌ Ошибка удаления")
+    
+    await callback.answer()
 async def main():
     """Основная функция запуска бота"""
     logging.basicConfig(level=logging.INFO)
