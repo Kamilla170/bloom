@@ -172,6 +172,47 @@ class PlantDatabase:
             except Exception as e:
                 print(f"Ошибка добавления в историю: {e}")
     
+    async def get_plant_by_id(self, plant_id: int, user_id: int = None) -> Optional[Dict]:
+        """Получить растение по ID"""
+        async with self.pool.acquire() as conn:
+            query = """
+                SELECT id, user_id, analysis, photo_file_id, plant_name, custom_name,
+                       saved_date, last_watered, 
+                       COALESCE(watering_count, 0) as watering_count, 
+                       notes
+                FROM plants 
+                WHERE id = $1
+            """
+            params = [plant_id]
+            
+            if user_id:
+                query += " AND user_id = $2"
+                params.append(user_id)
+            
+            row = await conn.fetchrow(query, *params)
+            
+            if row:
+                # Определяем отображаемое название
+                display_name = row['custom_name'] or row['plant_name']
+                if not display_name:
+                    extracted_name = self.extract_plant_name_from_analysis(row['analysis'])
+                    display_name = extracted_name or f"Растение #{row['id']}"
+                
+                return {
+                    'id': row['id'],
+                    'user_id': row['user_id'],
+                    'analysis': row['analysis'],
+                    'photo_file_id': row['photo_file_id'],
+                    'plant_name': row['plant_name'],
+                    'custom_name': row['custom_name'],
+                    'display_name': display_name,
+                    'saved_date': row['saved_date'],
+                    'last_watered': row['last_watered'],
+                    'watering_count': row['watering_count'],
+                    'notes': row['notes']
+                }
+            return None
+    
     async def get_user_plants(self, user_id: int, limit: int = 10) -> List[Dict]:
         """Получить растения пользователя с правильными названиями"""
         async with self.pool.acquire() as conn:
@@ -229,47 +270,6 @@ class PlantDatabase:
                 })
             
             return plants
-    
-    async def get_plant_by_id(self, plant_id: int, user_id: int = None) -> Optional[Dict]:
-        """Получить растение по ID"""
-        async with self.pool.acquire() as conn:
-            query = """
-                SELECT id, user_id, analysis, photo_file_id, plant_name, custom_name,
-                       saved_date, last_watered, 
-                       COALESCE(watering_count, 0) as watering_count, 
-                       notes
-                FROM plants 
-                WHERE id = $1
-            """
-            params = [plant_id]
-            
-            if user_id:
-                query += " AND user_id = $2"
-                params.append(user_id)
-            
-            row = await conn.fetchrow(query, *params)
-            
-            if row:
-                # Определяем отображаемое название
-                display_name = row['custom_name'] or row['plant_name']
-                if not display_name:
-                    extracted_name = self.extract_plant_name_from_analysis(row['analysis'])
-                    display_name = extracted_name or f"Растение #{row['id']}"
-                
-                return {
-                    'id': row['id'],
-                    'user_id': row['user_id'],
-                    'analysis': row['analysis'],
-                    'photo_file_id': row['photo_file_id'],
-                    'plant_name': row['plant_name'],
-                    'custom_name': row['custom_name'],
-                    'display_name': display_name,
-                    'saved_date': row['saved_date'],
-                    'last_watered': row['last_watered'],
-                    'watering_count': row['watering_count'],
-                    'notes': row['notes']
-                }
-            return None
     
     async def update_watering(self, user_id: int, plant_id: int = None):
         """Отметить полив"""
