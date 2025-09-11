@@ -1,7 +1,7 @@
 import os
 import asyncpg
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 
@@ -36,6 +36,18 @@ class PlantDatabase:
                 )
             """)
             
+            # Таблица настроек пользователей
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    reminder_time TEXT DEFAULT '09:00',
+                    timezone TEXT DEFAULT 'Europe/Moscow',
+                    reminder_enabled BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+            
             # Таблица растений с улучшенной структурой
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS plants (
@@ -48,7 +60,9 @@ class PlantDatabase:
                     saved_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_watered TIMESTAMP,
                     watering_count INTEGER DEFAULT 0,
+                    watering_interval INTEGER DEFAULT 5,
                     notes TEXT,
+                    reminder_enabled BOOLEAN DEFAULT TRUE,
                     FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
                 )
             """)
@@ -65,7 +79,7 @@ class PlantDatabase:
                 )
             """)
             
-            # Таблица напоминаний
+            # Обновленная таблица напоминаний
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id SERIAL PRIMARY KEY,
@@ -75,22 +89,29 @@ class PlantDatabase:
                     next_date TIMESTAMP NOT NULL,
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_sent TIMESTAMP,
+                    send_count INTEGER DEFAULT 0,
                     FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
                     FOREIGN KEY (plant_id) REFERENCES plants (id) ON DELETE CASCADE
                 )
             """)
             
-            # Добавляем новые колонки если они не существуют (для обновления старых БД)
+            # Добавляем новые колонки если они не существуют
             try:
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS custom_name TEXT")
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS watering_count INTEGER DEFAULT 0")
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS notes TEXT")
+                await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS watering_interval INTEGER DEFAULT 5")
+                await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE")
+                await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_sent TIMESTAMP")
+                await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS send_count INTEGER DEFAULT 0")
             except Exception as e:
                 print(f"Колонки уже существуют или ошибка: {e}")
             
             # Индексы для оптимизации
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_plants_user_id ON plants (user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders (user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_next_date ON reminders (next_date, is_active)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_plant_id ON care_history (plant_id)")
             
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
@@ -129,6 +150,13 @@ class PlantDatabase:
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name
             """, user_id, username, first_name)
+            
+            # Создаем настройки пользователя по умолчанию
+            await conn.execute("""
+                INSERT INTO user_settings (user_id)
+                VALUES ($1)
+                ON CONFLICT (user_id) DO NOTHING
+            """, user_id)
     
     async def save_plant(self, user_id: int, analysis: str, photo_file_id: str, plant_name: str = None) -> int:
         """Сохранить растение с автоматическим извлечением названия"""
@@ -172,13 +200,24 @@ class PlantDatabase:
             except Exception as e:
                 print(f"Ошибка добавления в историю: {e}")
     
+    async def update_plant_watering_interval(self, plant_id: int, interval_days: int):
+        """Обновить интервал полива растения"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE plants 
+                SET watering_interval = $1 
+                WHERE id = $2
+            """, interval_days, plant_id)
+    
     async def get_plant_by_id(self, plant_id: int, user_id: int = None) -> Optional[Dict]:
         """Получить растение по ID"""
         async with self.pool.acquire() as conn:
             query = """
                 SELECT id, user_id, analysis, photo_file_id, plant_name, custom_name,
                        saved_date, last_watered, 
-                       COALESCE(watering_count, 0) as watering_count, 
+                       COALESCE(watering_count, 0) as watering_count,
+                       COALESCE(watering_interval, 5) as watering_interval,
+                       COALESCE(reminder_enabled, TRUE) as reminder_enabled,
                        notes
                 FROM plants 
                 WHERE id = $1
@@ -209,6 +248,8 @@ class PlantDatabase:
                     'saved_date': row['saved_date'],
                     'last_watered': row['last_watered'],
                     'watering_count': row['watering_count'],
+                    'watering_interval': row['watering_interval'],
+                    'reminder_enabled': row['reminder_enabled'],
                     'notes': row['notes']
                 }
             return None
@@ -219,7 +260,9 @@ class PlantDatabase:
             rows = await conn.fetch("""
                 SELECT id, analysis, photo_file_id, plant_name, custom_name, 
                        saved_date, last_watered, 
-                       COALESCE(watering_count, 0) as watering_count, 
+                       COALESCE(watering_count, 0) as watering_count,
+                       COALESCE(watering_interval, 5) as watering_interval,
+                       COALESCE(reminder_enabled, TRUE) as reminder_enabled,
                        notes
                 FROM plants 
                 WHERE user_id = $1 
@@ -252,7 +295,7 @@ class PlantDatabase:
                         except Exception as e:
                             print(f"Ошибка обновления названия: {e}")
                 
-                # Fallback только если ничего не найдено (что теперь практически невозможно)
+                # Fallback только если ничего не найдено
                 if not display_name or display_name.lower().startswith(("неизвестн", "неопознан", "комнатное растение")):
                     display_name = f"Растение #{row['id']}"
                 
@@ -266,6 +309,8 @@ class PlantDatabase:
                     'saved_date': row['saved_date'],
                     'last_watered': row['last_watered'],
                     'watering_count': row['watering_count'],
+                    'watering_interval': row['watering_interval'],
+                    'reminder_enabled': row['reminder_enabled'],
                     'notes': row['notes']
                 })
             
@@ -322,6 +367,152 @@ class PlantDatabase:
                 WHERE user_id = $1 AND id = $2
             """, user_id, plant_id)
     
+    # Методы для работы с напоминаниями
+    
+    async def create_reminder(self, user_id: int, plant_id: int, reminder_type: str, next_date: datetime):
+        """Создать напоминание"""
+        async with self.pool.acquire() as conn:
+            # Удаляем старые активные напоминания для этого растения
+            await conn.execute("""
+                UPDATE reminders 
+                SET is_active = FALSE 
+                WHERE user_id = $1 AND plant_id = $2 AND reminder_type = $3 AND is_active = TRUE
+            """, user_id, plant_id, reminder_type)
+            
+            # Создаем новое напоминание
+            await conn.execute("""
+                INSERT INTO reminders (user_id, plant_id, reminder_type, next_date)
+                VALUES ($1, $2, $3, $4)
+            """, user_id, plant_id, reminder_type, next_date)
+    
+    async def get_due_reminders(self) -> List[Dict]:
+        """Получить напоминания к отправке"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT r.id, r.user_id, r.plant_id, r.reminder_type, r.next_date
+                FROM reminders r
+                JOIN plants p ON r.plant_id = p.id
+                JOIN user_settings us ON r.user_id = us.user_id
+                WHERE r.is_active = TRUE 
+                  AND r.next_date <= CURRENT_TIMESTAMP
+                  AND p.reminder_enabled = TRUE
+                  AND us.reminder_enabled = TRUE
+                ORDER BY r.next_date
+            """)
+            
+            reminders = []
+            for row in rows:
+                reminders.append({
+                    'id': row['id'],
+                    'user_id': row['user_id'],
+                    'plant_id': row['plant_id'],
+                    'reminder_type': row['reminder_type'],
+                    'next_date': row['next_date']
+                })
+            
+            return reminders
+    
+    async def get_plant_reminder(self, plant_id: int) -> Optional[Dict]:
+        """Получить активное напоминание для растения"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT id, user_id, plant_id, reminder_type, next_date, is_active
+                FROM reminders
+                WHERE plant_id = $1 AND is_active = TRUE AND reminder_type = 'watering'
+                ORDER BY next_date DESC
+                LIMIT 1
+            """, plant_id)
+            
+            if row:
+                return {
+                    'id': row['id'],
+                    'user_id': row['user_id'],
+                    'plant_id': row['plant_id'],
+                    'reminder_type': row['reminder_type'],
+                    'next_date': row['next_date'],
+                    'is_active': row['is_active']
+                }
+            return None
+    
+    async def disable_plant_reminders(self, plant_id: int):
+        """Отключить напоминания для растения"""
+        async with self.pool.acquire() as conn:
+            # Отключаем в таблице растений
+            await conn.execute("""
+                UPDATE plants 
+                SET reminder_enabled = FALSE 
+                WHERE id = $1
+            """, plant_id)
+            
+            # Деактивируем активные напоминания
+            await conn.execute("""
+                UPDATE reminders 
+                SET is_active = FALSE 
+                WHERE plant_id = $1 AND is_active = TRUE
+            """, plant_id)
+    
+    async def mark_reminder_sent(self, reminder_id: int):
+        """Отметить напоминание как отправленное"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE reminders 
+                SET last_sent = CURRENT_TIMESTAMP,
+                    send_count = COALESCE(send_count, 0) + 1,
+                    is_active = FALSE
+                WHERE id = $1
+            """, reminder_id)
+    
+    # Методы для настроек пользователя
+    
+    async def get_user_reminder_settings(self, user_id: int) -> Optional[Dict]:
+        """Получить настройки напоминаний пользователя"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT reminder_time, timezone, reminder_enabled
+                FROM user_settings
+                WHERE user_id = $1
+            """, user_id)
+            
+            if row:
+                return {
+                    'reminder_time': row['reminder_time'],
+                    'timezone': row['timezone'],
+                    'reminder_enabled': row['reminder_enabled']
+                }
+            return None
+    
+    async def update_user_reminder_settings(self, user_id: int, reminder_time: str = None, 
+                                          timezone: str = None, reminder_enabled: bool = None):
+        """Обновить настройки напоминаний пользователя"""
+        async with self.pool.acquire() as conn:
+            updates = []
+            params = []
+            param_count = 1
+            
+            if reminder_time is not None:
+                updates.append(f"reminder_time = ${param_count}")
+                params.append(reminder_time)
+                param_count += 1
+            
+            if timezone is not None:
+                updates.append(f"timezone = ${param_count}")
+                params.append(timezone)
+                param_count += 1
+            
+            if reminder_enabled is not None:
+                updates.append(f"reminder_enabled = ${param_count}")
+                params.append(reminder_enabled)
+                param_count += 1
+            
+            if updates:
+                params.append(user_id)
+                query = f"""
+                    UPDATE user_settings 
+                    SET {', '.join(updates)}
+                    WHERE user_id = ${param_count}
+                """
+                await conn.execute(query, *params)
+    
     async def get_plant_history(self, plant_id: int, limit: int = 20) -> List[Dict]:
         """Получить историю ухода за растением"""
         async with self.pool.acquire() as conn:
@@ -355,6 +546,7 @@ class PlantDatabase:
                     COUNT(*) as total_plants,
                     COUNT(CASE WHEN last_watered IS NOT NULL THEN 1 END) as watered_plants,
                     COALESCE(SUM(watering_count), 0) as total_waterings,
+                    COUNT(CASE WHEN reminder_enabled = TRUE THEN 1 END) as plants_with_reminders,
                     MIN(saved_date) as first_plant_date,
                     MAX(last_watered) as last_watered_date
                 FROM plants 
@@ -365,6 +557,7 @@ class PlantDatabase:
                 'total_plants': row['total_plants'] or 0,
                 'watered_plants': row['watered_plants'] or 0,
                 'total_waterings': row['total_waterings'] or 0,
+                'plants_with_reminders': row['plants_with_reminders'] or 0,
                 'first_plant_date': row['first_plant_date'],
                 'last_watered_date': row['last_watered_date']
             }
