@@ -80,7 +80,7 @@ class PlantStates(StatesGroup):
 # === СИСТЕМА НАПОМИНАНИЙ ===
 
 async def check_and_send_reminders():
-    """Проверка и отправка напоминаний о поливе"""
+    """Проверка и отправка напоминаний о поливе (каждые 8 часов)"""
     try:
         db = await get_db()
         
@@ -993,7 +993,7 @@ async def on_startup():
     scheduler.add_job(
         check_and_send_reminders,
         'interval',
-        hours=2,  # Проверяем каждые 2 часа
+        hours=8,  # Проверяем каждые 8 часов
         id='reminder_check',
         replace_existing=True
     )
