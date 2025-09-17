@@ -51,6 +51,12 @@ PLANT_IDENTIFICATION_PROMPT = """
 5. Видимые цветы или плоды
 6. Размер растения и горшка
 
+ОСОБОЕ ВНИМАНИЕ К СОСТОЯНИЮ ПОЛИВА:
+- Осмотрите листья на предмет увядания, желтизны, коричневых пятен
+- Оцените упругость и тургор листьев
+- Проанализируйте признаки переувлажнения или пересушивания
+- Посмотрите на состояние почвы (если видно)
+
 Дайте ответ в формате:
 РАСТЕНИЕ: [Точное название вида на русском и латинском языке]
 УВЕРЕННОСТЬ: [процент уверенности в идентификации]
@@ -59,7 +65,9 @@ PLANT_IDENTIFICATION_PROMPT = """
 РОДИНА: [естественная среда обитания]
 
 СОСТОЯНИЕ: [детальная оценка здоровья по листьям, цвету, упругости]
-ПОЛИВ: [конкретные рекомендации для этого вида]
+ПОЛИВ_АНАЛИЗ: [подробный анализ текущего состояния полива - переувлажнено/недополито/норма]
+ПОЛИВ_РЕКОМЕНДАЦИИ: [конкретные рекомендации по частоте и объему полива именно для ЭТОГО экземпляра]
+ПОЛИВ_ИНТЕРВАЛ: [рекомендуемый интервал в днях для ЭТОГО конкретного растения: 2-15]
 СВЕТ: [точные требования к освещению для данного растения]
 ТЕМПЕРАТУРА: [оптимальный диапазон для этого вида]
 ВЛАЖНОСТЬ: [требования к влажности воздуха]
@@ -69,7 +77,7 @@ PLANT_IDENTIFICATION_PROMPT = """
 ПРОБЛЕМЫ: [возможные болезни и вредители характерные для этого вида]
 СОВЕТ: [специфический совет для улучшения ухода за этим конкретным растением]
 
-Будьте максимально точными и конкретными. Если не можете точно определить вид, укажите хотя бы род или семейство.
+Будьте максимально точными и конкретными в анализе полива. Если не можете точно определить вид, укажите хотя бы род или семейство.
 """
 
 # Состояния
@@ -89,14 +97,16 @@ async def check_and_send_reminders():
             plants_to_water = await conn.fetch("""
                 SELECT p.id, p.user_id, 
                        COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as display_name,
-                       p.last_watered, p.watering_interval, p.photo_file_id
+                       p.last_watered, 
+                       COALESCE(p.watering_interval, 5) as watering_interval, 
+                       p.photo_file_id, p.notes
                 FROM plants p
                 JOIN user_settings us ON p.user_id = us.user_id
                 WHERE p.reminder_enabled = TRUE 
                   AND us.reminder_enabled = TRUE
                   AND (
                     p.last_watered IS NULL 
-                    OR p.last_watered + (p.watering_interval || ' days')::interval <= CURRENT_TIMESTAMP
+                    OR p.last_watered + (COALESCE(p.watering_interval, 5) || ' days')::interval <= CURRENT_TIMESTAMP
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM reminders r 
@@ -113,42 +123,63 @@ async def check_and_send_reminders():
         print(f"Ошибка проверки напоминаний: {e}")
 
 async def send_watering_reminder(plant_row):
-    """Отправка напоминания о поливе конкретного растения"""
+    """Отправка персонализированного напоминания о поливе"""
     try:
         user_id = plant_row['user_id']
         plant_id = plant_row['id']
         plant_name = plant_row['display_name']
         
+        # Получаем полную информацию о растении для персональных рекомендаций
+        db = await get_db()
+        plant_info = await db.get_plant_by_id(plant_id)
+        
         # Вычисляем сколько дней прошло с последнего полива
         if plant_row['last_watered']:
             days_ago = (datetime.now() - plant_row['last_watered']).days
-            time_info = f"Последний полив был {days_ago} дней назад"
+            if days_ago == 1:
+                time_info = f"Последний полив был вчера"
+            else:
+                time_info = f"Последний полив был {days_ago} дней назад"
         else:
             time_info = "Растение еще ни разу не поливали"
+        
+        # Формируем персональное сообщение
+        message_text = f"💧 <b>Время полить растение!</b>\n\n"
+        message_text += f"🌱 <b>{plant_name}</b>\n"
+        message_text += f"⏰ {time_info}\n"
+        
+        # Добавляем персональные рекомендации если есть
+        if plant_info and plant_info.get('notes'):
+            notes = plant_info['notes']
+            if "Персональные рекомендации по поливу:" in notes:
+                personal_rec = notes.replace("Персональные рекомендации по поливу:", "").strip()
+                message_text += f"\n💡 <b>Ваши персональные рекомендации:</b>\n{personal_rec}\n"
+            else:
+                message_text += f"\n📝 <b>Заметка:</b> {notes}\n"
+        else:
+            message_text += f"\n💡 Проверьте влажность почвы пальцем\n"
+        
+        # Интервал полива для информации
+        interval = plant_row.get('watering_interval', 5)
+        message_text += f"\n⏱️ <i>Интервал полива: каждые {interval} дней</i>"
         
         # Кнопки для быстрых действий
         keyboard = [
             [InlineKeyboardButton(text="💧 Полил(а)!", callback_data=f"water_plant_{plant_id}")],
             [InlineKeyboardButton(text="⏰ Напомнить завтра", callback_data=f"snooze_{plant_id}")],
-            [InlineKeyboardButton(text="🔧 Настройки", callback_data=f"edit_plant_{plant_id}")],
+            [InlineKeyboardButton(text="🔧 Настройки растения", callback_data=f"edit_plant_{plant_id}")],
         ]
         
         # Отправляем уведомление с фото растения
         await bot.send_photo(
             chat_id=user_id,
             photo=plant_row['photo_file_id'],
-            caption=(
-                f"💧 <b>Время полить растение!</b>\n\n"
-                f"🌱 <b>{plant_name}</b>\n"
-                f"⏰ {time_info}\n\n"
-                f"💡 Проверьте влажность почвы пальцем"
-            ),
+            caption=message_text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
         
         # Отмечаем что напоминание отправлено
-        db = await get_db()
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO reminders (user_id, plant_id, reminder_type, next_date, last_sent)
@@ -160,7 +191,7 @@ async def send_watering_reminder(plant_row):
                     send_count = COALESCE(reminders.send_count, 0) + 1
             """, user_id, plant_id, 'watering')
         
-        print(f"📤 Отправлено напоминание пользователю {user_id} о растении {plant_name}")
+        print(f"📤 Отправлено персональное напоминание пользователю {user_id} о растении {plant_name}")
         
     except Exception as e:
         print(f"Ошибка отправки напоминания: {e}")
@@ -208,46 +239,66 @@ async def snooze_reminder_callback(callback: types.CallbackQuery):
 # Обновленная функция сохранения растения
 @dp.callback_query(F.data == "save_plant")
 async def save_plant_callback(callback: types.CallbackQuery):
-    """Сохранение растения с созданием напоминания"""
+    """Сохранение растения с персональными рекомендациями по поливу"""
     user_id = callback.from_user.id
     
     if user_id in temp_analyses:
         try:
             analysis_data = temp_analyses[user_id]
+            raw_analysis = analysis_data.get("analysis", "")
             
-            # Определяем интервал полива на основе анализа
-            analysis_text = analysis_data["analysis"].lower()
-            if any(word in analysis_text for word in ["кактус", "суккулент", "алоэ"]):
-                watering_interval = 10  # Суккуленты реже
-            elif any(word in analysis_text for word in ["папоротник", "фиалка", "спатифиллум"]):
-                watering_interval = 3   # Влаголюбивые чаще
-            else:
-                watering_interval = 5   # Стандартный интервал
+            # Извлекаем персональную информацию о поливе
+            watering_info = extract_personal_watering_info(raw_analysis)
             
             # Сохраняем в БД
             db = await get_db()
             plant_id = await db.save_plant(
                 user_id=user_id,
-                analysis=analysis_data["analysis"],
+                analysis=raw_analysis,
                 photo_file_id=analysis_data["photo_file_id"],
                 plant_name=analysis_data.get("plant_name", "Неизвестное растение")
             )
             
-            # Устанавливаем интервал полива
-            await db.update_plant_watering_interval(plant_id, watering_interval)
+            # Устанавливаем персональный интервал полива
+            personal_interval = watering_info["interval_days"]
+            await db.update_plant_watering_interval(plant_id, personal_interval)
             
-            # Создаем напоминание
-            await create_plant_reminder(plant_id, user_id, watering_interval)
+            # Если растение нуждается в корректировке полива, устанавливаем заметку
+            if watering_info["needs_adjustment"] and watering_info["personal_recommendations"]:
+                async with db.pool.acquire() as conn:
+                    await conn.execute("""
+                        UPDATE plants SET notes = $1 WHERE id = $2
+                    """, f"Персональные рекомендации по поливу: {watering_info['personal_recommendations']}", plant_id)
+            
+            # Создаем напоминание с персональным интервалом
+            await create_plant_reminder(plant_id, user_id, personal_interval)
             
             # Удаляем временные данные
             del temp_analyses[user_id]
             
             plant_name = analysis_data.get("plant_name", "растение")
             
-            success_text = f"✅ <b>Растение сохранено и настроено!</b>\n\n"
+            # Формируем сообщение с персональной информацией
+            success_text = f"✅ <b>Растение сохранено с персональными настройками!</b>\n\n"
             success_text += f"🌱 <b>{plant_name}</b> добавлено в коллекцию\n"
-            success_text += f"⏰ Буду напоминать о поливе каждые {watering_interval} дней\n\n"
-            success_text += f"💡 Первое напоминание придет через {watering_interval} дней"
+            
+            # Добавляем информацию о персональном интервале
+            if watering_info["current_state"]:
+                if watering_info["needs_adjustment"]:
+                    success_text += f"⚠️ Текущее состояние: {watering_info['current_state']}\n"
+                else:
+                    success_text += f"✅ Состояние полива: {watering_info['current_state']}\n"
+            
+            success_text += f"⏰ Персональный интервал полива: каждые {personal_interval} дней\n\n"
+            
+            if watering_info["personal_recommendations"]:
+                success_text += f"💡 Ваши персональные рекомендации сохранены!\n\n"
+            
+            if watering_info["needs_adjustment"]:
+                success_text += f"🔍 <b>Внимание:</b> Растение нуждается в корректировке полива\n"
+                success_text += f"💧 Первое напоминание придет через {personal_interval} дней с учетом текущего состояния"
+            else:
+                success_text += f"💧 Первое напоминание о поливе придет через {personal_interval} дней"
             
             await callback.message.answer(
                 success_text,
@@ -324,6 +375,54 @@ def after_analysis():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+# Функция для извлечения персональных рекомендаций по поливу
+def extract_personal_watering_info(analysis_text: str) -> dict:
+    """Извлекает персональную информацию о поливе из анализа"""
+    watering_info = {
+        "interval_days": 5,  # по умолчанию
+        "personal_recommendations": "",
+        "current_state": "",
+        "needs_adjustment": False
+    }
+    
+    if not analysis_text:
+        return watering_info
+    
+    lines = analysis_text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Извлекаем персональный интервал
+        if line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
+            interval_text = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
+            # Ищем числа в тексте
+            import re
+            numbers = re.findall(r'\d+', interval_text)
+            if numbers:
+                try:
+                    interval = int(numbers[0])
+                    # Ограничиваем разумными пределами
+                    if 1 <= interval <= 15:
+                        watering_info["interval_days"] = interval
+                except:
+                    pass
+        
+        # Извлекаем анализ текущего состояния
+        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
+            current_state = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
+            watering_info["current_state"] = current_state
+            # Проверяем, нужна ли корректировка
+            if any(word in current_state.lower() for word in ["переувлажн", "перелив", "недополит", "пересушен", "проблем"]):
+                watering_info["needs_adjustment"] = True
+        
+        # Извлекаем персональные рекомендации
+        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
+            recommendations = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
+            watering_info["personal_recommendations"] = recommendations
+            
+    return watering_info
+
 # Улучшенное форматирование анализа
 def format_plant_analysis(raw_text: str, confidence: float = None) -> str:
     """Форматирование детального анализа растения"""
@@ -379,11 +478,25 @@ def format_plant_analysis(raw_text: str, confidence: float = None) -> str:
                 icon = "⚠️"
             else:
                 icon = "ℹ️"
-            formatted += f"{icon} <b>Состояние:</b> {condition}\n\n"
+            formatted += f"{icon} <b>Состояние:</b> {condition}\n"
             
-        elif line.startswith("ПОЛИВ:"):
-            watering = line.replace("ПОЛИВ:", "").strip()
-            formatted += f"💧 <b>Полив:</b> {watering}\n"
+        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
+            watering_analysis = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
+            if any(word in watering_analysis.lower() for word in ["переувлажн", "перелив"]):
+                icon = "🔴"
+            elif any(word in watering_analysis.lower() for word in ["недополит", "пересушен"]):
+                icon = "🟡"
+            else:
+                icon = "🟢"
+            formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
+            
+        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
+            watering_rec = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
+            formatted += f"💧 <b>Персональные рекомендации по поливу:</b> {watering_rec}\n"
+            
+        elif line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
+            interval = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
+            formatted += f"⏰ <b>Рекомендуемый интервал:</b> {interval} дней\n\n"
             
         elif line.startswith("СВЕТ:"):
             light = line.replace("СВЕТ:", "").strip()
@@ -637,11 +750,19 @@ async def analyze_with_plantid_advanced(image_data: bytes) -> dict:
         
         # Формируем специализированные рекомендации на основе Plant.id данных
         watering_info = plant_details.get("watering", {})
-        if watering_info:
-            watering_freq = "Следуйте стандартному режиму полива"
-            # Plant.id может предоставлять информацию о поливе
+        personal_watering_rec = "Следуйте персональному режиму полива для этого экземпляра"
+        watering_analysis = "Состояние полива требует визуальной оценки"
+        
+        # Пытаемся определить интервал на основе типа растения
+        if "succulent" in plant_name.lower() or "cactus" in plant_name.lower():
+            watering_interval = 10
+            personal_watering_rec = "Как суккулент, поливайте редко но обильно, когда почва полностью высохнет"
+        elif any(word in display_name.lower() for word in ["папоротник", "спатифиллум", "фиалка"]):
+            watering_interval = 3
+            personal_watering_rec = "Как влаголюбивое растение, поддерживайте постоянную умеренную влажность почвы"
         else:
-            watering_freq = "Поливайте когда верхний слой почвы подсохнет на 2-3 см"
+            watering_interval = 5
+            personal_watering_rec = "Поливайте когда верхний слой почвы подсохнет на 2-3 см"
         
         # Создаем детальный анализ
         analysis_text = f"""
@@ -652,7 +773,9 @@ async def analyze_with_plantid_advanced(image_data: bytes) -> dict:
 РОДИНА: {plant_details.get('description', {}).get('value', 'Информация недоступна')[:100] + '...' if plant_details.get('description', {}).get('value') else 'Не определено'}
 
 СОСТОЯНИЕ: {health_info}
-ПОЛИВ: {watering_freq}
+ПОЛИВ_АНАЛИЗ: {watering_analysis}
+ПОЛИВ_РЕКОМЕНДАЦИИ: {personal_watering_rec}
+ПОЛИВ_ИНТЕРВАЛ: {watering_interval}
 СВЕТ: Подберите освещение согласно требованиям данного вида
 ТЕМПЕРАТУРА: 18-24°C (уточните для конкретного вида)
 ВЛАЖНОСТЬ: Умеренная влажность воздуха 40-60%
@@ -735,7 +858,9 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None, retr
 РОДИНА: Не определено
 
 СОСТОЯНИЕ: Требуется визуальный осмотр листьев, стебля и корневой системы
-ПОЛИВ: Проверяйте влажность почвы пальцем - поливайте когда верхний слой подсох на 2-3 см
+ПОЛИВ_АНАЛИЗ: Невозможно оценить состояние полива без качественного фото
+ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы пальцем - поливайте когда верхний слой подсох на 2-3 см
+ПОЛИВ_ИНТЕРВАЛ: 5
 СВЕТ: Большинство комнатных растений предпочитают яркий рассеянный свет
 ТЕМПЕРАТУРА: 18-24°C - стандартный диапазон для комнатных растений
 ВЛАЖНОСТЬ: 40-60% влажности воздуха
@@ -1405,13 +1530,24 @@ async def edit_plant_callback(callback: types.CallbackQuery):
         info_text += f"📅 Добавлено: {saved_date}\n"
         info_text += f"{water_info}\n"
         
+        # Добавляем интервал полива
+        interval = plant.get('watering_interval', 5)
+        info_text += f"⏰ Интервал полива: каждые {interval} дней\n"
+        
+        # Показываем персональные рекомендации если есть
         if plant.get('notes'):
-            info_text += f"📝 Заметки: {plant['notes']}\n"
+            notes = plant['notes']
+            if "Персональные рекомендации по поливу:" in notes:
+                personal_rec = notes.replace("Персональные рекомендации по поливу:", "").strip()
+                info_text += f"\n💡 <b>Персональные рекомендации:</b>\n{personal_rec}\n"
+            else:
+                info_text += f"\n📝 Заметки: {notes}\n"
         
         keyboard = [
             [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"rename_plant_{plant_id}")],
             [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
             [InlineKeyboardButton(text="📷 Показать фото", callback_data=f"show_photo_{plant_id}")],
+            [InlineKeyboardButton(text="📋 Полный анализ", callback_data=f"show_analysis_{plant_id}")],
             [InlineKeyboardButton(text="🗑️ Удалить растение", callback_data=f"delete_plant_{plant_id}")],
             [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")],
         ]
@@ -1459,6 +1595,59 @@ async def rename_plant_callback(callback: types.CallbackQuery, state: FSMContext
     except Exception as e:
         print(f"Ошибка начала переименования: {e}")
         await callback.answer("❌ Ошибка обработки")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("show_analysis_"))
+async def show_plant_analysis_callback(callback: types.CallbackQuery):
+    """Показать полный анализ растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        plant_name = plant['display_name']
+        analysis_text = plant.get('analysis', 'Анализ недоступен')
+        
+        # Форматируем анализ для показа
+        formatted_analysis = format_plant_analysis(analysis_text)
+        
+        # Разбиваем на части если слишком длинный
+        max_length = 4000
+        if len(formatted_analysis) > max_length:
+            # Отправляем первую часть
+            await callback.message.answer(
+                f"📋 <b>Полный анализ: {plant_name}</b>\n\n{formatted_analysis[:max_length]}...\n\n<i>Продолжение следует...</i>",
+                parse_mode="HTML"
+            )
+            # Отправляем остальную часть
+            await callback.message.answer(
+                f"📋 <b>Продолжение анализа:</b>\n\n...{formatted_analysis[max_length:]}",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
+                    [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
+                ])
+            )
+        else:
+            await callback.message.answer(
+                f"📋 <b>Полный анализ: {plant_name}</b>\n\n{formatted_analysis}",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
+                    [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
+                ])
+            )
+        
+    except Exception as e:
+        print(f"Ошибка показа анализа: {e}")
+        await callback.answer("❌ Ошибка загрузки анализа")
     
     await callback.answer()
 
