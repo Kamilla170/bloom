@@ -1600,7 +1600,7 @@ async def rename_plant_callback(callback: types.CallbackQuery, state: FSMContext
 
 @dp.callback_query(F.data.startswith("show_analysis_"))
 async def show_plant_analysis_callback(callback: types.CallbackQuery):
-    """Показать полный анализ растения"""
+    """Показать полную карточку растения с актуальной информацией"""
     try:
         plant_id = int(callback.data.split("_")[-1])
         user_id = callback.from_user.id
@@ -1613,43 +1613,186 @@ async def show_plant_analysis_callback(callback: types.CallbackQuery):
             return
         
         plant_name = plant['display_name']
-        analysis_text = plant.get('analysis', 'Анализ недоступен')
+        analysis_text = plant.get('analysis', '')
         
-        # Форматируем анализ для показа
-        formatted_analysis = format_plant_analysis(analysis_text)
+        # Извлекаем информацию из анализа
+        plant_info = extract_plant_info_from_analysis(analysis_text)
+        
+        # Вычисляем актуальную информацию
+        added_date = plant["saved_date"].strftime("%d.%m.%Y")
+        days_since_added = (datetime.now() - plant["saved_date"]).days
+        
+        # Статус полива
+        if plant["last_watered"]:
+            last_watered_date = plant["last_watered"].strftime("%d.%m.%Y")
+            days_since_watered = (datetime.now() - plant["last_watered"]).days
+            interval = plant.get('watering_interval', 5)
+            next_watering_in = max(0, interval - days_since_watered)
+            
+            if days_since_watered == 0:
+                watering_status = "💧 Полито сегодня"
+                next_watering = f"⏰ Следующий полив через {interval} дней"
+            elif next_watering_in <= 0:
+                watering_status = f"🔴 Пора поливать! (прошло {days_since_watered} дней)"
+                next_watering = "⚠️ Требует немедленного полива"
+            elif next_watering_in == 1:
+                watering_status = f"🟡 Полито {days_since_watered} дней назад"
+                next_watering = "⏰ Полив завтра"
+            else:
+                watering_status = f"🟢 Полито {days_since_watered} дней назад"
+                next_watering = f"⏰ Следующий полив через {next_watering_in} дней"
+        else:
+            watering_status = "🆕 Еще не поливали"
+            interval = plant.get('watering_interval', 5)
+            next_watering = f"⏰ Рекомендуем полить через {interval} дней после добавления"
+        
+        # Формируем полную карточку
+        full_analysis = f"📋 <b>Полная карточка растения</b>\n\n"
+        
+        # Основная информация
+        full_analysis += f"🌱 <b>Название:</b> {plant_name}\n"
+        if plant_info.get('latin_name'):
+            full_analysis += f"🏷️ <i>{plant_info['latin_name']}</i>\n"
+        if plant_info.get('family'):
+            full_analysis += f"👨‍👩‍👧‍👦 <b>Семейство:</b> {plant_info['family']}\n"
+        if plant_info.get('origin'):
+            full_analysis += f"🌍 <b>Родина:</b> {plant_info['origin']}\n"
+        
+        full_analysis += f"\n📅 <b>В коллекции:</b> {added_date} ({days_since_added} дней)\n"
+        
+        # Текущий статус
+        full_analysis += f"\n📊 <b>ТЕКУЩИЙ СТАТУС:</b>\n"
+        full_analysis += f"{watering_status}\n"
+        full_analysis += f"{next_watering}\n"
+        full_analysis += f"🔄 Всего поливов: {plant.get('watering_count', 0)}\n"
+        
+        # Персональные рекомендации
+        if plant.get('notes') and "Персональные рекомендации по поливу:" in plant['notes']:
+            personal_rec = plant['notes'].replace("Персональные рекомендации по поливу:", "").strip()
+            full_analysis += f"\n💡 <b>ВАШИ ПЕРСОНАЛЬНЫЕ РЕКОМЕНДАЦИИ:</b>\n{personal_rec}\n"
+        
+        # Условия содержания из анализа
+        full_analysis += f"\n🏠 <b>УСЛОВИЯ СОДЕРЖАНИЯ:</b>\n"
+        if plant_info.get('light'):
+            full_analysis += f"☀️ <b>Свет:</b> {plant_info['light']}\n"
+        if plant_info.get('temperature'):
+            full_analysis += f"🌡️ <b>Температура:</b> {plant_info['temperature']}\n"
+        if plant_info.get('humidity'):
+            full_analysis += f"💨 <b>Влажность:</b> {plant_info['humidity']}\n"
+        
+        # Уход
+        full_analysis += f"\n🌿 <b>РЕКОМЕНДАЦИИ ПО УХОДУ:</b>\n"
+        if plant_info.get('feeding'):
+            full_analysis += f"🍽️ <b>Подкормка:</b> {plant_info['feeding']}\n"
+        if plant_info.get('repotting'):
+            full_analysis += f"🪴 <b>Пересадка:</b> {plant_info['repotting']}\n"
+        
+        # Возможные проблемы
+        if plant_info.get('problems'):
+            full_analysis += f"\n⚠️ <b>СЛЕДИТЕ ЗА:</b>\n{plant_info['problems']}\n"
+        
+        # Персональный совет
+        if plant_info.get('advice'):
+            full_analysis += f"\n🎯 <b>СОВЕТ ЭКСПЕРТА:</b>\n{plant_info['advice']}\n"
+        
+        # Получаем краткую историю ухода
+        try:
+            history = await db.get_plant_history(plant_id, limit=5)
+            if history:
+                full_analysis += f"\n📈 <b>ПОСЛЕДНИЕ ДЕЙСТВИЯ:</b>\n"
+                for action in history[:3]:  # Показываем только последние 3
+                    action_date = action['action_date'].strftime("%d.%m")
+                    action_type = action['action_type']
+                    if action_type == 'watered':
+                        full_analysis += f"💧 {action_date} - Полив\n"
+                    elif action_type == 'added':
+                        full_analysis += f"➕ {action_date} - Добавлено в коллекцию\n"
+                    elif action_type == 'renamed':
+                        full_analysis += f"✏️ {action_date} - Переименовано\n"
+        except:
+            pass
         
         # Разбиваем на части если слишком длинный
         max_length = 4000
-        if len(formatted_analysis) > max_length:
-            # Отправляем первую часть
+        if len(full_analysis) > max_length:
+            # Первая часть
             await callback.message.answer(
-                f"📋 <b>Полный анализ: {plant_name}</b>\n\n{formatted_analysis[:max_length]}...\n\n<i>Продолжение следует...</i>",
+                full_analysis[:max_length] + "...\n\n<i>Продолжение следует ↓</i>",
                 parse_mode="HTML"
             )
-            # Отправляем остальную часть
+            # Вторая часть
             await callback.message.answer(
-                f"📋 <b>Продолжение анализа:</b>\n\n...{formatted_analysis[max_length:]}",
+                f"📋 <b>Продолжение карточки:</b>\n\n" + full_analysis[max_length:],
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
+                    [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
                     [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
                 ])
             )
         else:
             await callback.message.answer(
-                f"📋 <b>Полный анализ: {plant_name}</b>\n\n{formatted_analysis}",
+                full_analysis,
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
+                    [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
                     [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
                 ])
             )
         
     except Exception as e:
-        print(f"Ошибка показа анализа: {e}")
-        await callback.answer("❌ Ошибка загрузки анализа")
+        print(f"Ошибка показа карточки растения: {e}")
+        await callback.answer("❌ Ошибка загрузки информации")
     
     await callback.answer()
+
+# Функция для извлечения структурированной информации из анализа
+def extract_plant_info_from_analysis(analysis_text: str) -> dict:
+    """Извлекает структурированную информацию о растении из текста анализа"""
+    info = {}
+    
+    if not analysis_text:
+        return info
+    
+    lines = analysis_text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        
+        if line.startswith("РАСТЕНИЕ:"):
+            plant_name = line.replace("РАСТЕНИЕ:", "").strip()
+            if "(" in plant_name and ")" in plant_name:
+                info['latin_name'] = plant_name[plant_name.find("(")+1:plant_name.find(")")]
+                
+        elif line.startswith("СЕМЕЙСТВО:"):
+            info['family'] = line.replace("СЕМЕЙСТВО:", "").strip()
+            
+        elif line.startswith("РОДИНА:"):
+            info['origin'] = line.replace("РОДИНА:", "").strip()
+            
+        elif line.startswith("СВЕТ:"):
+            info['light'] = line.replace("СВЕТ:", "").strip()
+            
+        elif line.startswith("ТЕМПЕРАТУРА:"):
+            info['temperature'] = line.replace("ТЕМПЕРАТУРА:", "").strip()
+            
+        elif line.startswith("ВЛАЖНОСТЬ:"):
+            info['humidity'] = line.replace("ВЛАЖНОСТЬ:", "").strip()
+            
+        elif line.startswith("ПОДКОРМКА:"):
+            info['feeding'] = line.replace("ПОДКОРМКА:", "").strip()
+            
+        elif line.startswith("ПЕРЕСАДКА:"):
+            info['repotting'] = line.replace("ПЕРЕСАДКА:", "").strip()
+            
+        elif line.startswith("ПРОБЛЕМЫ:"):
+            info['problems'] = line.replace("ПРОБЛЕМЫ:", "").strip()
+            
+        elif line.startswith("СОВЕТ:"):
+            info['advice'] = line.replace("СОВЕТ:", "").strip()
+    
+    return info
 
 @dp.callback_query(F.data.startswith("show_photo_"))
 async def show_plant_photo_callback(callback: types.CallbackQuery):
