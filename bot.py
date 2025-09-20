@@ -219,20 +219,32 @@ async def snooze_reminder_callback(callback: types.CallbackQuery):
     """Отложить напоминание на завтра"""
     try:
         plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
         
         db = await get_db()
-        plant = await db.get_plant_by_id(plant_id, callback.from_user.id)
+        plant = await db.get_plant_by_id(plant_id, user_id)
         
         if plant:
             plant_name = plant['display_name']
+            
+            # Создаем напоминание на завтра (через 1 день)
+            await create_plant_reminder(plant_id, user_id, 1)
+            
             await callback.message.answer(
                 f"⏰ <b>Напоминание отложено</b>\n\n"
-                f"Завтра напомню полить <b>{plant_name}</b>",
-                parse_mode="HTML"
+                f"🌱 <b>{plant_name}</b>\n"
+                f"📅 Завтра напомню полить это растение\n"
+                f"💡 Если забудете - можете отметить полив в любой момент",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="💧 Полил(а) сейчас", callback_data=f"water_plant_{plant_id}")],
+                    [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
+                ])
             )
         
     except Exception as e:
         print(f"Ошибка отложения напоминания: {e}")
+        await callback.answer("❌ Ошибка обработки")
     
     await callback.answer()
 
@@ -363,6 +375,7 @@ def main_menu():
         [InlineKeyboardButton(text="📸 Анализ растения", callback_data="analyze")],
         [InlineKeyboardButton(text="❓ Задать вопрос", callback_data="question")],
         [InlineKeyboardButton(text="🌱 Мои растения", callback_data="my_plants")],
+        [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -883,6 +896,72 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None, retr
         "needs_retry": True
     }
 
+@dp.message(Command("notifications"))
+async def notifications_command(message: types.Message):
+    """Команда /notifications - быстрый доступ к настройкам уведомлений"""
+    # Вызываем тот же обработчик что и кнопка
+    callback_query = types.CallbackQuery(
+        id="cmd_notifications",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="notification_settings"
+    )
+    await notification_settings_callback(callback_query)
+
+@dp.message(Command("plants"))
+async def plants_command(message: types.Message):
+    """Команда /plants - быстрый доступ к коллекции"""
+    callback_query = types.CallbackQuery(
+        id="cmd_plants",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="my_plants"
+    )
+    await my_plants_callback(callback_query)
+
+@dp.message(Command("analyze"))
+async def analyze_command(message: types.Message):
+    """Команда /analyze - быстрый доступ к анализу"""
+    await message.answer(
+        "📸 <b>Отправьте фото растения для анализа</b>\n\n"
+        "💡 <b>Советы для лучшего результата:</b>\n"
+        "• Фотографируйте при дневном свете\n"
+        "• Покажите листья и общий вид растения\n" 
+        "• Избегайте размытых и тёмных снимков\n"
+        "• Можете добавить вопрос в описании к фото",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("question"))
+async def question_command(message: types.Message, state: FSMContext):
+    """Команда /question - быстрый доступ к вопросам"""
+    await message.answer(
+        "❓ <b>Задайте ваш вопрос о растениях</b>\n\n"
+        "💡 <b>Я могу помочь с:</b>\n"
+        "• Проблемами с листьями (желтеют, сохнут, опадают)\n"
+        "• Режимом полива и подкормки\n" 
+        "• Пересадкой и размножением\n"
+        "• Болезнями и вредителями\n"
+        "• Выбором места для растения\n"
+        "• Любыми другими вопросами по уходу",
+        parse_mode="HTML"
+    )
+    await state.set_state(PlantStates.waiting_question)
+
+@dp.message(Command("stats"))
+async def stats_command(message: types.Message):
+    """Команда /stats - быстрый доступ к статистике"""
+    callback_query = types.CallbackQuery(
+        id="cmd_stats",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="stats"
+    )
+    await stats_callback(callback_query)
+
 # Обработчики команд
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -905,7 +984,8 @@ async def start_command(message: types.Message):
         "📸 Точное распознавание видов растений\n"
         "💡 Персонализированные рекомендации по уходу\n"
         "❓ Ответы на вопросы о растениях\n"
-        "⏰ Умные напоминания о поливе для каждого растения\n\n"
+        "⏰ Умные напоминания о поливе для каждого растения\n"
+        "🔔 Гибкие настройки уведомлений\n\n"
         "Пришлите фото растения для детального анализа!",
         reply_markup=main_menu()
     )
@@ -926,6 +1006,11 @@ async def help_command(message: types.Message):
 • Персональный график для каждого растения
 • Быстрая отметка полива из уведомления
 
+🔔 <b>Настройки уведомлений:</b>
+• Глобальное включение/выключение всех уведомлений
+• Индивидуальные настройки для каждого растения
+• Массовое управление уведомлениями коллекции
+
 ❓ <b>Вопросы о растениях:</b>
 • Просто напиши вопрос в чат
 • Или используй команду /question
@@ -935,6 +1020,7 @@ async def help_command(message: types.Message):
 • Команда /plants - просмотр коллекции
 • Отмечай полив и уход
 • Настраивай персональные интервалы
+• Полные карточки растений с историей
 
 📊 <b>Статистика:</b>
 • Команда /stats - подробная статистика
@@ -950,6 +1036,7 @@ async def help_command(message: types.Message):
 /analyze - анализ растения
 /question - задать вопрос
 /plants - мои растения  
+/notifications - настройки уведомлений
 /stats - статистика
 /help - эта справка
 
@@ -1543,9 +1630,18 @@ async def edit_plant_callback(callback: types.CallbackQuery):
             else:
                 info_text += f"\n📝 Заметки: {notes}\n"
         
+        # Показываем статус уведомлений
+        reminder_status = "🔔 включены" if plant.get('reminder_enabled', True) else "🔕 выключены"
+        info_text += f"\n🔔 Уведомления: {reminder_status}"
+        
+        # Кнопка для переключения уведомлений
+        reminder_enabled = plant.get('reminder_enabled', True)
+        reminder_button_text = "🔕 Выключить уведомления" if reminder_enabled else "🔔 Включить уведомления"
+        
         keyboard = [
             [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"rename_plant_{plant_id}")],
             [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
+            [InlineKeyboardButton(text=reminder_button_text, callback_data=f"toggle_reminder_{plant_id}")],
             [InlineKeyboardButton(text="📷 Показать фото", callback_data=f"show_photo_{plant_id}")],
             [InlineKeyboardButton(text="📋 Полный анализ", callback_data=f"show_analysis_{plant_id}")],
             [InlineKeyboardButton(text="🗑️ Удалить растение", callback_data=f"delete_plant_{plant_id}")],
@@ -1793,6 +1889,332 @@ def extract_plant_info_from_analysis(analysis_text: str) -> dict:
             info['advice'] = line.replace("СОВЕТ:", "").strip()
     
     return info
+
+@dp.callback_query(F.data == "notification_settings")
+async def notification_settings_callback(callback: types.CallbackQuery):
+    """Настройки уведомлений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        
+        # Получаем текущие настройки пользователя
+        user_settings = await db.get_user_reminder_settings(user_id)
+        if not user_settings:
+            # Создаем настройки по умолчанию
+            await db.update_user_reminder_settings(user_id, reminder_enabled=True)
+            user_settings = {'reminder_enabled': True, 'reminder_time': '09:00'}
+        
+        # Получаем статистику растений
+        async with db.pool.acquire() as conn:
+            plants_stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_plants,
+                    COUNT(CASE WHEN reminder_enabled = TRUE THEN 1 END) as plants_with_reminders
+                FROM plants 
+                WHERE user_id = $1
+            """, user_id)
+        
+        total_plants = plants_stats['total_plants'] or 0
+        plants_with_reminders = plants_stats['plants_with_reminders'] or 0
+        
+        global_enabled = user_settings.get('reminder_enabled', True)
+        global_status = "🔔 включены" if global_enabled else "🔕 выключены"
+        
+        settings_text = f"🔔 <b>Настройки уведомлений</b>\n\n"
+        settings_text += f"🌍 <b>Глобальные уведомления:</b> {global_status}\n"
+        settings_text += f"🌱 <b>Растений в коллекции:</b> {total_plants}\n"
+        settings_text += f"🔔 <b>С включенными уведомлениями:</b> {plants_with_reminders}\n\n"
+        
+        if global_enabled:
+            settings_text += f"✅ Вы получаете уведомления о поливе\n"
+            settings_text += f"⏰ Проверяем растения каждые 8 часов\n"
+            if plants_with_reminders < total_plants:
+                settings_text += f"\n💡 У {total_plants - plants_with_reminders} растений уведомления выключены индивидуально"
+        else:
+            settings_text += f"❌ Все уведомления отключены\n"
+            settings_text += f"🔕 Напоминания о поливе не приходят"
+        
+        # Кнопки управления
+        global_button_text = "🔕 Выключить все уведомления" if global_enabled else "🔔 Включить все уведомления"
+        
+        keyboard = [
+            [InlineKeyboardButton(text=global_button_text, callback_data="toggle_global_reminders")],
+            [InlineKeyboardButton(text="🌱 Настройки по растениям", callback_data="plant_reminders_list")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await callback.message.answer(
+            settings_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка настроек уведомлений: {e}")
+        await callback.message.answer("❌ Ошибка загрузки настроек.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "toggle_global_reminders")
+async def toggle_global_reminders_callback(callback: types.CallbackQuery):
+    """Переключение глобальных уведомлений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        
+        # Получаем текущие настройки
+        user_settings = await db.get_user_reminder_settings(user_id)
+        current_enabled = user_settings.get('reminder_enabled', True) if user_settings else True
+        
+        # Переключаем
+        new_enabled = not current_enabled
+        await db.update_user_reminder_settings(user_id, reminder_enabled=new_enabled)
+        
+        if new_enabled:
+            status_text = "✅ <b>Глобальные уведомления включены!</b>\n\n"
+            status_text += "🔔 Теперь вы будете получать напоминания о поливе\n"
+            status_text += "⏰ Проверяем растения каждые 8 часов\n"
+            status_text += "🌱 Уведомления придут для всех растений с включенными напоминаниями"
+        else:
+            status_text = "🔕 <b>Все уведомления отключены</b>\n\n"
+            status_text += "❌ Напоминания о поливе не будут приходить\n"
+            status_text += "💡 Вы можете включить их в любой момент\n"
+            status_text += "🌱 Настройки отдельных растений сохранены"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await callback.message.answer(
+            status_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка переключения глобальных уведомлений: {e}")
+        await callback.message.answer("❌ Ошибка изменения настроек.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "plant_reminders_list")
+async def plant_reminders_list_callback(callback: types.CallbackQuery):
+    """Список растений с настройками уведомлений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=20)
+        
+        if not plants:
+            await callback.message.answer(
+                "🌱 У вас пока нет растений в коллекции.\n"
+                "📸 Добавьте растения для настройки уведомлений!",
+                reply_markup=main_menu()
+            )
+            await callback.answer()
+            return
+        
+        text = f"🌱 <b>Настройки уведомлений по растениям:</b>\n\n"
+        
+        keyboard_buttons = []
+        
+        for plant in plants:
+            plant_name = plant['display_name']
+            reminder_enabled = plant.get('reminder_enabled', True)
+            interval = plant.get('watering_interval', 5)
+            
+            status_icon = "🔔" if reminder_enabled else "🔕"
+            short_name = plant_name[:20] + "..." if len(plant_name) > 20 else plant_name
+            
+            text += f"{status_icon} <b>{plant_name}</b>\n"
+            if reminder_enabled:
+                text += f"   ⏰ Напоминания каждые {interval} дней\n"
+            else:
+                text += f"   🔕 Уведомления выключены\n"
+            text += "\n"
+            
+            # Кнопка переключения
+            button_text = f"{status_icon} {short_name}"
+            keyboard_buttons.append([
+                InlineKeyboardButton(
+                    text=button_text, 
+                    callback_data=f"toggle_reminder_{plant['id']}"
+                )
+            ])
+        
+        # Общие кнопки
+        keyboard_buttons.extend([
+            [InlineKeyboardButton(text="🔔 Включить все", callback_data="enable_all_plant_reminders"),
+             InlineKeyboardButton(text="🔕 Выключить все", callback_data="disable_all_plant_reminders")],
+            [InlineKeyboardButton(text="🔙 К настройкам", callback_data="notification_settings")],
+        ])
+        
+        await callback.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка списка растений: {e}")
+        await callback.message.answer("❌ Ошибка загрузки списка растений.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("toggle_reminder_"))
+async def toggle_plant_reminder_callback(callback: types.CallbackQuery):
+    """Переключение уведомлений для отдельного растения"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_by_id(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        # Переключаем состояние
+        current_enabled = plant.get('reminder_enabled', True)
+        new_enabled = not current_enabled
+        
+        async with db.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE plants 
+                SET reminder_enabled = $1 
+                WHERE id = $2 AND user_id = $3
+            """, new_enabled, plant_id, user_id)
+            
+            if not new_enabled:
+                # Если выключаем, деактивируем активные напоминания
+                await conn.execute("""
+                    UPDATE reminders 
+                    SET is_active = FALSE 
+                    WHERE plant_id = $1 AND is_active = TRUE
+                """, plant_id)
+        
+        plant_name = plant['display_name']
+        
+        if new_enabled:
+            # Создаем новое напоминание
+            interval = plant.get('watering_interval', 5)
+            await create_plant_reminder(plant_id, user_id, interval)
+            
+            status_text = f"🔔 <b>Уведомления включены!</b>\n\n"
+            status_text += f"🌱 <b>{plant_name}</b>\n"
+            status_text += f"⏰ Будете получать напоминания каждые {interval} дней\n"
+            status_text += f"📱 Следующее уведомление придет в положенное время"
+        else:
+            status_text = f"🔕 <b>Уведомления выключены</b>\n\n"
+            status_text += f"🌱 <b>{plant_name}</b>\n"
+            status_text += f"❌ Напоминания о поливе больше не будут приходить\n"
+            status_text += f"💡 Можете включить в любой момент"
+        
+        # Определяем, откуда пришел запрос для правильной кнопки "Назад"
+        if "plant_reminders_list" in callback.message.text:
+            back_button = InlineKeyboardButton(text="🔙 К списку растений", callback_data="plant_reminders_list")
+        else:
+            back_button = InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")
+        
+        keyboard = [
+            [back_button],
+            [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
+        ]
+        
+        await callback.message.answer(
+            status_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка переключения уведомлений растения: {e}")
+        await callback.answer("❌ Ошибка изменения настроек")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "enable_all_plant_reminders")
+async def enable_all_plant_reminders_callback(callback: types.CallbackQuery):
+    """Включить уведомления для всех растений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        
+        # Включаем уведомления для всех растений пользователя
+        async with db.pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE plants 
+                SET reminder_enabled = TRUE 
+                WHERE user_id = $1 AND reminder_enabled = FALSE
+            """, user_id)
+            
+            updated_count = result.split()[-1] if result else "0"
+        
+        await callback.message.answer(
+            f"🔔 <b>Уведомления включены для всех растений!</b>\n\n"
+            f"✅ Обновлено растений: {updated_count}\n"
+            f"📱 Теперь вы будете получать напоминания о поливе для всей коллекции",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌱 К списку растений", callback_data="plant_reminders_list")],
+                [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
+            ])
+        )
+        
+    except Exception as e:
+        print(f"Ошибка включения всех уведомлений: {e}")
+        await callback.message.answer("❌ Ошибка изменения настроек.")
+    
+    await callback.answer()
+
+@dp.callback_query(F.data == "disable_all_plant_reminders")
+async def disable_all_plant_reminders_callback(callback: types.CallbackQuery):
+    """Выключить уведомления для всех растений"""
+    user_id = callback.from_user.id
+    
+    try:
+        db = await get_db()
+        
+        # Выключаем уведомления для всех растений пользователя
+        async with db.pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE plants 
+                SET reminder_enabled = FALSE 
+                WHERE user_id = $1 AND reminder_enabled = TRUE
+            """, user_id)
+            
+            # Деактивируем все активные напоминания
+            await conn.execute("""
+                UPDATE reminders 
+                SET is_active = FALSE 
+                WHERE user_id = $1 AND is_active = TRUE
+            """, user_id)
+            
+            updated_count = result.split()[-1] if result else "0"
+        
+        await callback.message.answer(
+            f"🔕 <b>Уведомления выключены для всех растений</b>\n\n"
+            f"❌ Обновлено растений: {updated_count}\n"
+            f"💡 Напоминания о поливе больше не будут приходить\n"
+            f"🔔 Можете включить в любой момент",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌱 К списку растений", callback_data="plant_reminders_list")],
+                [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
+            ])
+        )
+        
+    except Exception as e:
+        print(f"Ошибка выключения всех уведомлений: {e}")
+        await callback.message.answer("❌ Ошибка изменения настроек.")
+    
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("show_photo_"))
 async def show_plant_photo_callback(callback: types.CallbackQuery):
@@ -2196,8 +2618,8 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI Plant Care Assistant", 
-        "version": "2.1",
-        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders"]
+        "version": "2.2",
+        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders", "notification_management"]
     })
 
 async def main():
@@ -2220,6 +2642,7 @@ async def main():
         print(f"🚀 Bloom AI Plant Bot запущен на порту {PORT}")
         print(f"🌱 Готов к точному распознаванию растений!")
         print(f"⏰ Умные напоминания активны!")
+        print(f"🔔 Система управления уведомлениями готова!")
         
         try:
             await asyncio.Future()
