@@ -21,6 +21,9 @@ from database import init_database, get_db
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
 
+# Московская временная зона (UTC+3)
+MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+
 # Настройки
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -34,7 +37,7 @@ dp = Dispatcher(storage=MemoryStorage())
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # Планировщик напоминаний
-scheduler = AsyncIOScheduler(timezone=pytz.timezone('Europe/Moscow'))
+scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
 
 # Временное хранилище для анализов
 temp_analyses = {}
@@ -85,12 +88,25 @@ class PlantStates(StatesGroup):
     waiting_question = State()
     editing_plant_name = State()
 
+# Функция для получения текущего московского времени
+def get_moscow_now():
+    """Получить текущее время в московской зоне"""
+    return datetime.now(MOSCOW_TZ)
+
+def get_moscow_date():
+    """Получить текущую дату в московской зоне"""
+    return get_moscow_now().date()
+
 # === СИСТЕМА НАПОМИНАНИЙ ===
 
 async def check_and_send_reminders():
-    """Проверка и отправка напоминаний о поливе (каждые 8 часов)"""
+    """Проверка и отправка напоминаний о поливе (ежедневно утром)"""
     try:
         db = await get_db()
+        
+        # Получаем текущее московское время
+        moscow_now = get_moscow_now()
+        moscow_date = moscow_now.date()
         
         # Получаем растения, которые нужно полить
         async with db.pool.acquire() as conn:
@@ -106,15 +122,15 @@ async def check_and_send_reminders():
                   AND us.reminder_enabled = TRUE
                   AND (
                     p.last_watered IS NULL 
-                    OR p.last_watered + (COALESCE(p.watering_interval, 5) || ' days')::interval <= CURRENT_TIMESTAMP
+                    OR p.last_watered::date + (COALESCE(p.watering_interval, 5) || ' days')::interval <= $1::date
                   )
                   AND NOT EXISTS (
                     SELECT 1 FROM reminders r 
                     WHERE r.plant_id = p.id 
-                    AND r.last_sent::date = CURRENT_DATE
+                    AND r.last_sent::date = $1::date
                   )
                 ORDER BY p.last_watered ASC NULLS FIRST
-            """)
+            """, moscow_date)
             
             for plant in plants_to_water:
                 await send_watering_reminder(plant)
@@ -133,9 +149,17 @@ async def send_watering_reminder(plant_row):
         db = await get_db()
         plant_info = await db.get_plant_by_id(plant_id)
         
-        # Вычисляем сколько дней прошло с последнего полива
+        # Вычисляем сколько дней прошло с последнего полива (по московскому времени)
+        moscow_now = get_moscow_now()
+        
         if plant_row['last_watered']:
-            days_ago = (datetime.now() - plant_row['last_watered']).days
+            # Конвертируем UTC время из БД в московское
+            last_watered_utc = plant_row['last_watered']
+            if last_watered_utc.tzinfo is None:
+                last_watered_utc = pytz.UTC.localize(last_watered_utc)
+            last_watered_moscow = last_watered_utc.astimezone(MOSCOW_TZ)
+            
+            days_ago = (moscow_now.date() - last_watered_moscow.date()).days
             if days_ago == 1:
                 time_info = f"Последний полив был вчера"
             else:
@@ -179,17 +203,18 @@ async def send_watering_reminder(plant_row):
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
         
-        # Отмечаем что напоминание отправлено
+        # Отмечаем что напоминание отправлено (московское время)
+        moscow_now_str = moscow_now.strftime('%Y-%m-%d %H:%M:%S')
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO reminders (user_id, plant_id, reminder_type, next_date, last_sent)
-                VALUES ($1, $2, 'watering', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES ($1, $2, 'watering', $3::timestamp, $3::timestamp)
                 ON CONFLICT (user_id, plant_id, reminder_type) 
                 WHERE is_active = TRUE
                 DO UPDATE SET 
-                    last_sent = CURRENT_TIMESTAMP,
+                    last_sent = $3::timestamp,
                     send_count = COALESCE(reminders.send_count, 0) + 1
-            """, user_id, plant_id, 'watering')
+            """, user_id, plant_id, moscow_now_str)
         
         print(f"📤 Отправлено персональное напоминание пользователю {user_id} о растении {plant_name}")
         
@@ -197,10 +222,11 @@ async def send_watering_reminder(plant_row):
         print(f"Ошибка отправки напоминания: {e}")
 
 async def create_plant_reminder(plant_id: int, user_id: int, interval_days: int = 5):
-    """Создать напоминание для нового растения"""
+    """Создать напоминание для нового растения (московское время)"""
     try:
         db = await get_db()
-        next_watering = datetime.now() + timedelta(days=interval_days)
+        moscow_now = get_moscow_now()
+        next_watering = moscow_now + timedelta(days=interval_days)
         
         await db.create_reminder(
             user_id=user_id,
@@ -348,7 +374,7 @@ async def water_single_plant_callback(callback: types.CallbackQuery):
         interval = plant.get('watering_interval', 5)
         await create_plant_reminder(plant_id, user_id, interval)
         
-        current_time = datetime.now().strftime("%d.%m.%Y в %H:%M")
+        current_time = get_moscow_now().strftime("%d.%m.%Y в %H:%M")
         plant_name = plant['display_name']
         
         await callback.message.answer(
@@ -1002,7 +1028,7 @@ async def help_command(message: types.Message):
 • Сохрани растение в коллекцию
 
 ⏰ <b>Умные напоминания:</b>
-• Автоматические уведомления о поливе
+• Ежедневная проверка растений в 9:00 утра (МСК)
 • Персональный график для каждого растения
 • Быстрая отметка полива из уведомления
 
@@ -1406,7 +1432,7 @@ async def handle_photo(message: types.Message):
                 "analysis": result.get("raw_analysis", result["analysis"]),
                 "formatted_analysis": result["analysis"],
                 "photo_file_id": photo.file_id,
-                "date": datetime.now(),
+                "date": get_moscow_now(),
                 "source": result.get("source", "unknown"),
                 "plant_name": result.get("plant_name", "Неизвестное растение"),
                 "confidence": result.get("confidence", 0),
@@ -1538,9 +1564,17 @@ async def my_plants_callback(callback: types.CallbackQuery):
             plant_name = plant['display_name']
             saved_date = plant["saved_date"].strftime("%d.%m.%Y")
             
-            # Статус полива
+            # Статус полива (по московскому времени)
+            moscow_now = get_moscow_now()
+            
             if plant["last_watered"]:
-                days_ago = (datetime.now() - plant["last_watered"]).days
+                # Конвертируем UTC время из БД в московское
+                last_watered_utc = plant["last_watered"]
+                if last_watered_utc.tzinfo is None:
+                    last_watered_utc = pytz.UTC.localize(last_watered_utc)
+                last_watered_moscow = last_watered_utc.astimezone(MOSCOW_TZ)
+                
+                days_ago = (moscow_now.date() - last_watered_moscow.date()).days
                 if days_ago == 0:
                     water_status = "💧 Полито сегодня"
                 elif days_ago == 1:
@@ -1714,14 +1748,28 @@ async def show_plant_analysis_callback(callback: types.CallbackQuery):
         # Извлекаем информацию из анализа
         plant_info = extract_plant_info_from_analysis(analysis_text)
         
-        # Вычисляем актуальную информацию
+        # Вычисляем актуальную информацию (по московскому времени)
+        moscow_now = get_moscow_now()
         added_date = plant["saved_date"].strftime("%d.%m.%Y")
-        days_since_added = (datetime.now() - plant["saved_date"]).days
         
-        # Статус полива
+        # Конвертируем дату добавления в московское время для правильного расчета дней
+        saved_date_utc = plant["saved_date"]
+        if saved_date_utc.tzinfo is None:
+            saved_date_utc = pytz.UTC.localize(saved_date_utc)
+        saved_date_moscow = saved_date_utc.astimezone(MOSCOW_TZ)
+        
+        days_since_added = (moscow_now.date() - saved_date_moscow.date()).days
+        
+        # Статус полива (по московскому времени)
         if plant["last_watered"]:
-            last_watered_date = plant["last_watered"].strftime("%d.%m.%Y")
-            days_since_watered = (datetime.now() - plant["last_watered"]).days
+            # Конвертируем UTC время полива в московское
+            last_watered_utc = plant["last_watered"]
+            if last_watered_utc.tzinfo is None:
+                last_watered_utc = pytz.UTC.localize(last_watered_utc)
+            last_watered_moscow = last_watered_utc.astimezone(MOSCOW_TZ)
+            
+            last_watered_date = last_watered_moscow.strftime("%d.%m.%Y")
+            days_since_watered = (moscow_now.date() - last_watered_moscow.date()).days
             interval = plant.get('watering_interval', 5)
             next_watering_in = max(0, interval - days_since_watered)
             
@@ -1797,14 +1845,20 @@ async def show_plant_analysis_callback(callback: types.CallbackQuery):
             if history:
                 full_analysis += f"\n📈 <b>ПОСЛЕДНИЕ ДЕЙСТВИЯ:</b>\n"
                 for action in history[:3]:  # Показываем только последние 3
-                    action_date = action['action_date'].strftime("%d.%m")
+                    # Конвертируем время действия в московское
+                    action_date_utc = action['action_date']
+                    if action_date_utc.tzinfo is None:
+                        action_date_utc = pytz.UTC.localize(action_date_utc)
+                    action_date_moscow = action_date_utc.astimezone(MOSCOW_TZ)
+                    action_date_str = action_date_moscow.strftime("%d.%m")
+                    
                     action_type = action['action_type']
                     if action_type == 'watered':
-                        full_analysis += f"💧 {action_date} - Полив\n"
+                        full_analysis += f"💧 {action_date_str} - Полив\n"
                     elif action_type == 'added':
-                        full_analysis += f"➕ {action_date} - Добавлено в коллекцию\n"
+                        full_analysis += f"➕ {action_date_str} - Добавлено в коллекцию\n"
                     elif action_type == 'renamed':
-                        full_analysis += f"✏️ {action_date} - Переименовано\n"
+                        full_analysis += f"✏️ {action_date_str} - Переименовано\n"
         except:
             pass
         
@@ -1928,7 +1982,7 @@ async def notification_settings_callback(callback: types.CallbackQuery):
         
         if global_enabled:
             settings_text += f"✅ Вы получаете уведомления о поливе\n"
-            settings_text += f"⏰ Проверяем растения каждые 8 часов\n"
+            settings_text += f"⏰ Проверяем растения каждый день в 9:00 (МСК)\n"
             if plants_with_reminders < total_plants:
                 settings_text += f"\n💡 У {total_plants - plants_with_reminders} растений уведомления выключены индивидуально"
         else:
@@ -1975,7 +2029,7 @@ async def toggle_global_reminders_callback(callback: types.CallbackQuery):
         if new_enabled:
             status_text = "✅ <b>Глобальные уведомления включены!</b>\n\n"
             status_text += "🔔 Теперь вы будете получать напоминания о поливе\n"
-            status_text += "⏰ Проверяем растения каждые 8 часов\n"
+            status_text += "⏰ Проверяем растения каждый день в 9:00 утра (МСК)\n"
             status_text += "🌱 Уведомления придут для всех растений с включенными напоминаниями"
         else:
             status_text = "🔕 <b>Все уведомления отключены</b>\n\n"
@@ -2339,7 +2393,7 @@ async def water_plants_callback(callback: types.CallbackQuery):
         db = await get_db()
         await db.update_watering(user_id)
         
-        current_time = datetime.now().strftime("%d.%m.%Y в %H:%M")
+        current_time = get_moscow_now().strftime("%d.%m.%Y в %H:%M")
         
         await callback.message.answer(
             f"💧 <b>Отлично! Полив отмечен</b>\n\n"
@@ -2399,15 +2453,29 @@ async def stats_callback(callback: types.CallbackQuery):
             text += f"💧 <b>Политых растений:</b> {watered_count} из {stats['total_plants']} ({watered_percent}%)\n"
             text += f"{care_icon} <b>Оценка ухода:</b> {care_status}\n\n"
             
-            # Временные показатели
+            # Временные показатели (по московскому времени)
+            moscow_now = get_moscow_now()
+            
             if stats['first_plant_date']:
-                first_date = stats['first_plant_date'].strftime("%d.%m.%Y")
-                days_gardening = (datetime.now() - stats['first_plant_date']).days
+                # Конвертируем дату первого растения в московское время
+                first_plant_utc = stats['first_plant_date']
+                if first_plant_utc.tzinfo is None:
+                    first_plant_utc = pytz.UTC.localize(first_plant_utc)
+                first_plant_moscow = first_plant_utc.astimezone(MOSCOW_TZ)
+                
+                first_date = first_plant_moscow.strftime("%d.%m.%Y")
+                days_gardening = (moscow_now.date() - first_plant_moscow.date()).days
                 text += f"📅 <b>Садовничаете с:</b> {first_date} ({days_gardening} дней)\n"
             
             if stats['last_watered_date']:
-                last_watered = stats['last_watered_date'].strftime("%d.%m.%Y")
-                days_since_watering = (datetime.now().date() - stats['last_watered_date'].date()).days
+                # Конвертируем дату последнего полива
+                last_watered_utc = stats['last_watered_date']
+                if last_watered_utc.tzinfo is None:
+                    last_watered_utc = pytz.UTC.localize(last_watered_utc)
+                last_watered_moscow = last_watered_utc.astimezone(MOSCOW_TZ)
+                
+                last_watered = last_watered_moscow.strftime("%d.%m.%Y")
+                days_since_watering = (moscow_now.date() - last_watered_moscow.date()).days
                 if days_since_watering == 0:
                     text += f"💧 <b>Последний полив:</b> сегодня\n"
                 elif days_since_watering == 1:
@@ -2564,13 +2632,17 @@ async def on_startup():
     # Запускаем планировщик напоминаний
     scheduler.add_job(
         check_and_send_reminders,
-        'interval',
-        hours=8,  # Проверяем каждые 8 часов
+        'cron',
+        hour=9,     # Каждый день в 9:00 утра по московскому времени (UTC+3)
+        minute=0,
         id='reminder_check',
         replace_existing=True
     )
     scheduler.start()
-    print("🔔 Планировщик напоминаний запущен")
+    print("🔔 Планировщик напоминаний запущен (ежедневно в 9:00 МСК)")
+    
+    # Для тестирования можно запустить проверку сразу (закомментировано в продакшене)
+    # await check_and_send_reminders()
     
     if WEBHOOK_URL:
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
@@ -2618,8 +2690,9 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI Plant Care Assistant", 
-        "version": "2.2",
-        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders", "notification_management"]
+        "version": "2.4",
+        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders", "notification_management"],
+        "reminder_schedule": "daily_at_09:00_MSK_UTC+3"
     })
 
 async def main():
@@ -2641,7 +2714,7 @@ async def main():
         
         print(f"🚀 Bloom AI Plant Bot запущен на порту {PORT}")
         print(f"🌱 Готов к точному распознаванию растений!")
-        print(f"⏰ Умные напоминания активны!")
+        print(f"⏰ Умные напоминания активны (МСК UTC+3)!")
         print(f"🔔 Система управления уведомлениями готова!")
         
         try:
