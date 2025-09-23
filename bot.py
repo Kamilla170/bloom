@@ -1861,21 +1861,22 @@ async def show_plant_analysis_callback(callback: types.CallbackQuery):
             personal_rec = plant['notes'].replace("Персональные рекомендации по поливу:", "").strip()
             full_analysis += f"\n💡 <b>ВАШИ ПЕРСОНАЛЬНЫЕ РЕКОМЕНДАЦИИ:</b>\n{personal_rec}\n"
         
-        # Условия содержания из анализа
-        full_analysis += f"\n🏠 <b>УСЛОВИЯ СОДЕРЖАНИЯ:</b>\n"
-        if plant_info.get('light'):
-            full_analysis += f"☀️ <b>Свет:</b> {plant_info['light']}\n"
-        if plant_info.get('temperature'):
-            full_analysis += f"🌡️ <b>Температура:</b> {plant_info['temperature']}\n"
-        if plant_info.get('humidity'):
-            full_analysis += f"💨 <b>Влажность:</b> {plant_info['humidity']}\n"
+        # Условия содержания и уход - объединяем в логичные блоки
+        if plant_info.get('light') or plant_info.get('temperature') or plant_info.get('humidity'):
+            full_analysis += f"\n🏠 <b>ТРЕБОВАНИЯ К УСЛОВИЯМ:</b>\n"
+            if plant_info.get('light'):
+                full_analysis += f"☀️ <b>Освещение:</b> {plant_info['light']}\n"
+            if plant_info.get('temperature'):
+                full_analysis += f"🌡️ <b>Температура:</b> {plant_info['temperature']}\n"
+            if plant_info.get('humidity'):
+                full_analysis += f"💨 <b>Влажность:</b> {plant_info['humidity']}\n"
         
-        # Уход
-        full_analysis += f"\n🌿 <b>РЕКОМЕНДАЦИИ ПО УХОДУ:</b>\n"
-        if plant_info.get('feeding'):
-            full_analysis += f"🍽️ <b>Подкормка:</b> {plant_info['feeding']}\n"
-        if plant_info.get('repotting'):
-            full_analysis += f"🪴 <b>Пересадка:</b> {plant_info['repotting']}\n"
+        if plant_info.get('feeding') or plant_info.get('repotting'):
+            full_analysis += f"\n🌿 <b>УХОД И ПОДКОРМКА:</b>\n"
+            if plant_info.get('feeding'):
+                full_analysis += f"🍽️ <b>Удобрения:</b> {plant_info['feeding']}\n"
+            if plant_info.get('repotting'):
+                full_analysis += f"🪴 <b>Пересадка:</b> {plant_info['repotting']}\n"
         
         # Возможные проблемы
         if plant_info.get('problems'):
