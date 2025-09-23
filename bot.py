@@ -2676,6 +2676,21 @@ async def on_startup():
     """Инициализация при запуске"""
     await init_database()
     
+    # Устанавливаем команды бота для меню
+    commands = [
+        types.BotCommand(command="start", description="🌱 Начать работу"),
+        types.BotCommand(command="add", description="🌱 Добавить растение"),
+        types.BotCommand(command="analyze", description="📸 Анализ растения"),
+        types.BotCommand(command="question", description="❓ Задать вопрос"),
+        types.BotCommand(command="plants", description="🌿 Мои растения"),
+        types.BotCommand(command="notifications", description="🔔 Настройки уведомлений"),
+        types.BotCommand(command="stats", description="📊 Статистика"),
+        types.BotCommand(command="help", description="ℹ️ Справка"),
+    ]
+    
+    await bot.set_my_commands(commands)
+    print("📋 Команды бота установлены")
+    
     # Запускаем планировщик напоминаний
     scheduler.add_job(
         check_and_send_reminders,
@@ -2737,9 +2752,10 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI Plant Care Assistant", 
-        "version": "2.5",
-        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders", "notification_management", "easy_plant_adding"],
-        "reminder_schedule": "daily_at_09:00_MSK_UTC+3"
+        "version": "2.6",
+        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders", "notification_management", "easy_plant_adding", "bot_commands"],
+        "reminder_schedule": "daily_at_09:00_MSK_UTC+3",
+        "commands": ["start", "add", "analyze", "question", "plants", "notifications", "stats", "help"]
     })
 
 async def main():
@@ -2763,6 +2779,7 @@ async def main():
         print(f"🌱 Готов к точному распознаванию растений!")
         print(f"⏰ Умные напоминания активны (МСК UTC+3)!")
         print(f"🔔 Система управления уведомлениями готова!")
+        print(f"📋 Все команды бота настроены и доступны!")
         
         try:
             await asyncio.Future()
@@ -2773,6 +2790,10 @@ async def main():
             await on_shutdown()
     else:
         print("🤖 Бот запущен в режиме polling")
+        print("🌱 Готов к точному распознаванию растений!")
+        print("⏰ Умные напоминания активны (МСК UTC+3)!")
+        print("🔔 Система управления уведомлениями готова!")
+        print("📋 Все команды бота настроены и доступны!")
         try:
             await dp.start_polling(bot, drop_pending_updates=True)
         except KeyboardInterrupt:
