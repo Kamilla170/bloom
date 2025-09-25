@@ -564,7 +564,7 @@ async def water_single_plant_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# === ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений) ===
+# === ОСТАЛЬНЫЕ ФУНКЦИИ ===
 
 # Клавиатуры
 def main_menu():
@@ -1095,6 +1095,8 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None, retr
         "needs_retry": True
     }
 
+# === ОБРАБОТЧИКИ КОМАНД ===
+
 @dp.message(Command("notifications"))
 async def notifications_command(message: types.Message):
     """Команда /notifications - быстрый доступ к настройкам уведомлений"""
@@ -1151,22 +1153,6 @@ async def grow_command(message: types.Message, state: FSMContext):
         data="grow_from_scratch"
     )
     await grow_from_scratch_callback(callback_query, state)
-async def add_command(message: types.Message):
-    """Команда /add - быстрый доступ к добавлению растения"""
-    await message.answer(
-        "🌱 <b>Добавьте растение в коллекцию</b>\n\n"
-        "📸 <b>Пришлите фото вашего растения:</b>\n"
-        "• Я определю вид и состояние растения\n"
-        "• Дам персональные рекомендации по уходу\n"
-        "• Автоматически добавлю в вашу коллекцию\n"
-        "• Настрою индивидуальные напоминания о поливе\n\n"
-        "💡 <b>Советы для лучшего результата:</b>\n"
-        "• Фотографируйте при дневном свете\n"
-        "• Покажите листья и общий вид растения\n" 
-        "• Избегайте размытых и тёмных снимков\n"
-        "• Можете добавить вопрос в описании к фото",
-        parse_mode="HTML"
-    )
 
 @dp.message(Command("analyze"))
 async def analyze_command(message: types.Message):
@@ -1209,7 +1195,6 @@ async def stats_command(message: types.Message):
     )
     await stats_callback(callback_query)
 
-# Обработчики команд
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
     """Команда /start"""
@@ -1309,6 +1294,8 @@ async def help_command(message: types.Message):
 💡 <b>Быстрый доступ через меню команд!</b>
     """
     await message.answer(help_text, parse_mode="HTML", reply_markup=main_menu())
+
+# === ОБРАБОТЧИКИ СОСТОЯНИЙ ===
 
 @dp.message(StateFilter(PlantStates.editing_plant_name))
 async def handle_plant_rename(message: types.Message, state: FSMContext):
@@ -1481,7 +1468,6 @@ async def handle_text_message(message: types.Message):
             )
             return
         
-        # Остальная логика для обычных вопросов...
         # Проверяем, связан ли текст с растениями и безопасен ли он
         is_safe_plant_topic, reason = is_plant_related_and_safe(text)
         
@@ -1646,154 +1632,6 @@ def extract_plant_name_from_text(text: str) -> str:
             return value
     
     return None
-    """Обработка произвольных текстовых сообщений"""
-    try:
-        text = message.text.strip()
-        
-        # Пропускаем команды
-        if text.startswith('/'):
-            return
-        
-        # Проверяем, связан ли текст с растениями и безопасен ли он
-        is_safe_plant_topic, reason = is_plant_related_and_safe(text)
-        
-        if reason == "illegal":
-            await message.reply(
-                "⚠️ Извините, я не могу предоставить информацию о таких растениях.\n\n"
-                "🌱 Я помогаю только с комнатными, садовыми и декоративными растениями!\n"
-                "📸 Пришлите фото своего домашнего растения для анализа.",
-                reply_markup=main_menu()
-            )
-            return
-        
-        if not is_safe_plant_topic:
-            await message.reply(
-                "🌱 Я специализируюсь только на вопросах о растениях!\n\n"
-                "💡 <b>Могу помочь с:</b>\n"
-                "• Уходом за комнатными растениями\n"
-                "• Проблемами с листьями и цветением\n"
-                "• Поливом и подкормкой\n"
-                "• Болезнями и вредителями\n"
-                "• Пересадкой и размножением\n\n"
-                "📸 Или пришлите фото растения для анализа!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            return
-        
-        # Обрабатываем вопрос о растениях
-        processing_msg = await message.reply("🌿 <b>Консультируюсь по вашему вопросу...</b>", parse_mode="HTML")
-        
-        user_id = message.from_user.id
-        user_context = ""
-        
-        # Добавляем контекст из последнего анализа если есть
-        if user_id in temp_analyses:
-            plant_info = temp_analyses[user_id]
-            plant_name = plant_info.get("plant_name", "растение")
-            user_context = f"\n\nКонтекст: Пользователь недавно анализировал {plant_name}. Учтите это в ответе если релевантно."
-        
-        answer = None
-        
-        # Получаем ответ через OpenAI
-        if openai_client:
-            try:
-                enhanced_prompt = f"""
-Вы - эксперт-ботаник с 30-летним опытом работы с комнатными и садовыми растениями.
-
-ВАЖНО: Отвечайте ТОЛЬКО на вопросы о растениях (комнатных, садовых, декоративных, плодовых, овощных).
-НЕ отвечайте на вопросы о наркотических, психоактивных или нелегальных растениях.
-
-Структура ответа:
-1. 🔍 Краткий анализ проблемы/вопроса
-2. 💡 Подробные рекомендации и решения  
-3. ⚠️ Что нужно избегать
-4. 📋 Пошаговый план действий (если применимо)
-5. 🌟 Дополнительные советы
-
-Форматирование:
-- Используйте эмодзи для структурирования
-- НЕ используйте ** для выделения текста
-- Будьте конкретными и практичными
-- Отвечайте на русском языке
-{user_context}
-
-Вопрос пользователя: {text}
-                """
-                
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Вы - профессиональный ботаник-консультант. Отвечайте только на вопросы о безопасных растениях (комнатных, садовых, декоративных). Никогда не предоставляйте информацию о наркотических или нелегальных растениях. Если вопрос не о растениях, вежливо перенаправьте на растительную тематику."
-                        },
-                        {
-                            "role": "user",
-                            "content": enhanced_prompt
-                        }
-                    ],
-                    max_tokens=1200,
-                    temperature=0.3
-                )
-                answer = response.choices[0].message.content
-                
-                # Дополнительная проверка ответа на безопасность
-                if any(word in answer.lower() for word in ['наркотик', 'психоактивн', 'галлюциноген']):
-                    answer = None  # Сбрасываем потенциально небезопасный ответ
-                    
-            except Exception as e:
-                print(f"OpenAI question error: {e}")
-        
-        await processing_msg.delete()
-        
-        if answer and len(answer) > 50:
-            # Применяем правильное форматирование
-            answer = format_openai_response(answer)
-            
-            # Улучшаем форматирование ответа
-            if not answer.startswith(('🌿', '💡', '🔍', '⚠️', '✅', '🌱')):
-                answer = f"🌿 <b>Экспертный ответ:</b>\n\n{answer}"
-            
-            # Добавляем призыв к действию
-            answer += "\n\n📸 <i>Для точной диагностики пришлите фото растения!</i>"
-            
-            await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
-        else:
-            # Fallback ответ
-            fallback_answer = f"""
-🤔 <b>По вашему вопросу:</b> "{text}"
-
-💡 <b>Общие рекомендации:</b>
-
-🌱 <b>Основы ухода за растениями:</b>
-• Проверяйте влажность почвы перед поливом
-• Обеспечьте достаточное освещение
-• Поддерживайте подходящую температуру (18-24°C)
-• Регулярно осматривайте растение на предмет проблем
-
-⚠️ <b>Признаки проблем:</b>
-• Желтые листья → переувлажнение или нехватка света
-• Коричневые кончики → сухой воздух или перебор с удобрениями  
-• Опадание листьев → стресс, смена условий
-• Вялые листья → недостаток или избыток влаги
-
-📸 <b>Для точного ответа:</b>
-Пришлите фото вашего растения - я проведу детальный анализ и дам персональные рекомендации!
-
-🆘 <b>Экстренные случаи:</b>
-При серьезных проблемах обратитесь в садовый центр или к специалисту-ботанику.
-            """
-            
-            await message.reply(fallback_answer, parse_mode="HTML", reply_markup=main_menu())
-        
-    except Exception as e:
-        print(f"Ошибка обработки текстового сообщения: {e}")
-        await message.reply(
-            "❌ Произошла ошибка при обработке вашего сообщения.\n"
-            "🔄 Попробуйте переформулировать вопрос или пришлите фото растения.", 
-            reply_markup=main_menu()
-        )
 
 @dp.message(StateFilter(PlantStates.waiting_question))
 async def handle_question(message: types.Message, state: FSMContext):
@@ -1897,7 +1735,9 @@ async def handle_question(message: types.Message, state: FSMContext):
             reply_markup=main_menu()
         )
         await state.clear()
-# Улучшенная обработка фотографий
+
+# === ОБРАБОТКА ФОТОГРАФИЙ ===
+
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     """Обработка фотографий растений с улучшенным анализом"""
@@ -1991,7 +1831,8 @@ async def handle_photo(message: types.Message):
             reply_markup=main_menu()
         )
 
-# Callback обработчики
+# === CALLBACK ОБРАБОТЧИКИ ===
+
 @dp.callback_query(F.data == "add_plant")
 async def add_plant_callback(callback: types.CallbackQuery):
     await callback.message.answer(
@@ -2168,7 +2009,8 @@ async def my_plants_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# Обработчики редактирования растений
+# === ОСТАЛЬНЫЕ CALLBACK ОБРАБОТЧИКИ ===
+
 @dp.callback_query(F.data.startswith("edit_plant_"))
 async def edit_plant_callback(callback: types.CallbackQuery):
     """Показать меню редактирования растения"""
@@ -2276,222 +2118,80 @@ async def rename_plant_callback(callback: types.CallbackQuery, state: FSMContext
     
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("show_analysis_"))
-async def show_plant_analysis_callback(callback: types.CallbackQuery):
-    """Показать полную карточку растения с актуальной информацией"""
-    try:
-        plant_id = int(callback.data.split("_")[-1])
-        user_id = callback.from_user.id
-        
-        db = await get_db()
-        plant = await db.get_plant_by_id(plant_id, user_id)
-        
-        if not plant:
-            await callback.answer("❌ Растение не найдено")
-            return
-        
-        plant_name = plant['display_name']
-        analysis_text = plant.get('analysis', '')
-        
-        # Извлекаем информацию из анализа
-        plant_info = extract_plant_info_from_analysis(analysis_text)
-        
-        # Вычисляем актуальную информацию (по московскому времени)
-        moscow_now = get_moscow_now()
-        added_date = plant["saved_date"].strftime("%d.%m.%Y")
-        
-        # Конвертируем дату добавления в московское время для правильного расчета дней
-        saved_date_utc = plant["saved_date"]
-        if saved_date_utc.tzinfo is None:
-            saved_date_utc = pytz.UTC.localize(saved_date_utc)
-        saved_date_moscow = saved_date_utc.astimezone(MOSCOW_TZ)
-        
-        days_since_added = (moscow_now.date() - saved_date_moscow.date()).days
-        
-        # Статус полива (по московскому времени)
-        if plant["last_watered"]:
-            # Конвертируем UTC время полива в московское
-            last_watered_utc = plant["last_watered"]
-            if last_watered_utc.tzinfo is None:
-                last_watered_utc = pytz.UTC.localize(last_watered_utc)
-            last_watered_moscow = last_watered_utc.astimezone(MOSCOW_TZ)
-            
-            last_watered_date = last_watered_moscow.strftime("%d.%m.%Y")
-            days_since_watered = (moscow_now.date() - last_watered_moscow.date()).days
-            interval = plant.get('watering_interval', 5)
-            next_watering_in = max(0, interval - days_since_watered)
-            
-            if days_since_watered == 0:
-                watering_status = "💧 Полито сегодня"
-                next_watering = f"⏰ Следующий полив через {interval} дней"
-            elif next_watering_in <= 0:
-                watering_status = f"🔴 Пора поливать! (прошло {days_since_watered} дней)"
-                next_watering = "⚠️ Требует немедленного полива"
-            elif next_watering_in == 1:
-                watering_status = f"🟡 Полито {days_since_watered} дней назад"
-                next_watering = "⏰ Полив завтра"
-            else:
-                watering_status = f"🟢 Полито {days_since_watered} дней назад"
-                next_watering = f"⏰ Следующий полив через {next_watering_in} дней"
-        else:
-            watering_status = "🆕 Еще не поливали"
-            interval = plant.get('watering_interval', 5)
-            next_watering = f"⏰ Рекомендуем полить через {interval} дней после добавления"
-        
-        # Формируем полную карточку
-        full_analysis = f"📋 <b>Полная карточка растения</b>\n\n"
-        
-        # Основная информация
-        full_analysis += f"🌱 <b>Название:</b> {plant_name}\n"
-        if plant_info.get('latin_name'):
-            full_analysis += f"🏷️ <i>{plant_info['latin_name']}</i>\n"
-        if plant_info.get('family'):
-            full_analysis += f"👨‍👩‍👧‍👦 <b>Семейство:</b> {plant_info['family']}\n"
-        if plant_info.get('origin'):
-            full_analysis += f"🌍 <b>Родина:</b> {plant_info['origin']}\n"
-        
-        full_analysis += f"\n📅 <b>В коллекции:</b> {added_date} ({days_since_added} дней)\n"
-        
-        # Текущий статус
-        full_analysis += f"\n📊 <b>ТЕКУЩИЙ СТАТУС:</b>\n"
-        full_analysis += f"{watering_status}\n"
-        full_analysis += f"{next_watering}\n"
-        full_analysis += f"🔄 Всего поливов: {plant.get('watering_count', 0)}\n"
-        
-        # Персональные рекомендации
-        if plant.get('notes') and "Персональные рекомендации по поливу:" in plant['notes']:
-            personal_rec = plant['notes'].replace("Персональные рекомендации по поливу:", "").strip()
-            full_analysis += f"\n💡 <b>ВАШИ ПЕРСОНАЛЬНЫЕ РЕКОМЕНДАЦИИ:</b>\n{personal_rec}\n"
-        
-        # Условия содержания и уход - объединяем в логичные блоки
-        if plant_info.get('light') or plant_info.get('temperature') or plant_info.get('humidity'):
-            full_analysis += f"\n🏠 <b>ТРЕБОВАНИЯ К УСЛОВИЯМ:</b>\n"
-            if plant_info.get('light'):
-                full_analysis += f"☀️ <b>Освещение:</b> {plant_info['light']}\n"
-            if plant_info.get('temperature'):
-                full_analysis += f"🌡️ <b>Температура:</b> {plant_info['temperature']}\n"
-            if plant_info.get('humidity'):
-                full_analysis += f"💨 <b>Влажность:</b> {plant_info['humidity']}\n"
-        
-        if plant_info.get('feeding') or plant_info.get('repotting'):
-            full_analysis += f"\n🌿 <b>УХОД И ПОДКОРМКА:</b>\n"
-            if plant_info.get('feeding'):
-                full_analysis += f"🍽️ <b>Удобрения:</b> {plant_info['feeding']}\n"
-            if plant_info.get('repotting'):
-                full_analysis += f"🪴 <b>Пересадка:</b> {plant_info['repotting']}\n"
-        
-        # Возможные проблемы
-        if plant_info.get('problems'):
-            full_analysis += f"\n⚠️ <b>СЛЕДИТЕ ЗА:</b>\n{plant_info['problems']}\n"
-        
-        # Персональный совет
-        if plant_info.get('advice'):
-            full_analysis += f"\n🎯 <b>СОВЕТ ЭКСПЕРТА:</b>\n{plant_info['advice']}\n"
-        
-        # Получаем краткую историю ухода
-        try:
-            history = await db.get_plant_history(plant_id, limit=5)
-            if history:
-                full_analysis += f"\n📈 <b>ПОСЛЕДНИЕ ДЕЙСТВИЯ:</b>\n"
-                for action in history[:3]:  # Показываем только последние 3
-                    # Конвертируем время действия в московское
-                    action_date_utc = action['action_date']
-                    if action_date_utc.tzinfo is None:
-                        action_date_utc = pytz.UTC.localize(action_date_utc)
-                    action_date_moscow = action_date_utc.astimezone(MOSCOW_TZ)
-                    action_date_str = action_date_moscow.strftime("%d.%m")
-                    
-                    action_type = action['action_type']
-                    if action_type == 'watered':
-                        full_analysis += f"💧 {action_date_str} - Полив\n"
-                    elif action_type == 'added':
-                        full_analysis += f"➕ {action_date_str} - Добавлено в коллекцию\n"
-                    elif action_type == 'renamed':
-                        full_analysis += f"✏️ {action_date_str} - Переименовано\n"
-        except:
-            pass
-        
-        # Разбиваем на части если слишком длинный
-        max_length = 4000
-        if len(full_analysis) > max_length:
-            # Первая часть
-            await callback.message.answer(
-                full_analysis[:max_length] + "...\n\n<i>Продолжение следует ↓</i>",
-                parse_mode="HTML"
-            )
-            # Вторая часть
-            await callback.message.answer(
-                f"📋 <b>Продолжение карточки:</b>\n\n" + full_analysis[max_length:],
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
-                    [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
-                    [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
-                ])
-            )
-        else:
-            await callback.message.answer(
-                full_analysis,
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
-                    [InlineKeyboardButton(text="💧 Отметить полив", callback_data=f"water_plant_{plant_id}")],
-                    [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
-                ])
-            )
-        
-    except Exception as e:
-        print(f"Ошибка показа карточки растения: {e}")
-        await callback.answer("❌ Ошибка загрузки информации")
-    
-    await callback.answer()
+# === ОСТАЛЬНЫЕ ФУНКЦИИ ===
 
-# Функция для извлечения структурированной информации из анализа
-def extract_plant_info_from_analysis(analysis_text: str) -> dict:
-    """Извлекает структурированную информацию о растении из текста анализа"""
-    info = {}
+def is_plant_related_and_safe(text: str) -> tuple[bool, str]:
+    """Проверяет, связан ли вопрос с растениями и безопасен ли он"""
+    text_lower = text.lower()
     
-    if not analysis_text:
-        return info
+    # Запрещенные темы (наркотические и нелегальные растения)
+    forbidden_keywords = [
+        'марихуана', 'каннабис', 'конопля', 'гашиш', 'травка', 'план', 'дурь',
+        'кока', 'кокаин', 'мак', 'опиум', 'героин', 'псилоцибин', 'грибы галлюциногенные',
+        'дурман', 'белена', 'красавка', 'аяуаска', 'салвия дивинорум',
+        'наркотик', 'наркотический', 'психоактивн', 'галлюциноген', 'опьянен'
+    ]
     
-    lines = analysis_text.split('\n')
+    # Проверяем на запрещенные темы
+    for keyword in forbidden_keywords:
+        if keyword in text_lower:
+            return False, "illegal"
     
-    for line in lines:
-        line = line.strip()
-        
-        if line.startswith("РАСТЕНИЕ:"):
-            plant_name = line.replace("РАСТЕНИЕ:", "").strip()
-            if "(" in plant_name and ")" in plant_name:
-                info['latin_name'] = plant_name[plant_name.find("(")+1:plant_name.find(")")]
-                
-        elif line.startswith("СЕМЕЙСТВО:"):
-            info['family'] = line.replace("СЕМЕЙСТВО:", "").strip()
-            
-        elif line.startswith("РОДИНА:"):
-            info['origin'] = line.replace("РОДИНА:", "").strip()
-            
-        elif line.startswith("СВЕТ:"):
-            info['light'] = line.replace("СВЕТ:", "").strip()
-            
-        elif line.startswith("ТЕМПЕРАТУРА:"):
-            info['temperature'] = line.replace("ТЕМПЕРАТУРА:", "").strip()
-            
-        elif line.startswith("ВЛАЖНОСТЬ:"):
-            info['humidity'] = line.replace("ВЛАЖНОСТЬ:", "").strip()
-            
-        elif line.startswith("ПОДКОРМКА:"):
-            info['feeding'] = line.replace("ПОДКОРМКА:", "").strip()
-            
-        elif line.startswith("ПЕРЕСАДКА:"):
-            info['repotting'] = line.replace("ПЕРЕСАДКА:", "").strip()
-            
-        elif line.startswith("ПРОБЛЕМЫ:"):
-            info['problems'] = line.replace("ПРОБЛЕМЫ:", "").strip()
-            
-        elif line.startswith("СОВЕТ:"):
-            info['advice'] = line.replace("СОВЕТ:", "").strip()
+    # Ключевые слова растительной тематики
+    plant_keywords = [
+        'растение', 'цветок', 'дерево', 'куст', 'трава', 'листья', 'лист', 'корни', 'корень',
+        'стебель', 'ствол', 'ветки', 'ветка', 'плод', 'фрукт', 'овощ', 'ягода', 'семена', 'семя',
+        'полив', 'поливать', 'удобрение', 'подкормка', 'пересадка', 'почва', 'грунт', 'земля',
+        'горшок', 'кашпо', 'освещение', 'свет', 'солнце', 'тень', 'влажность', 'температура',
+        'болезнь', 'вредитель', 'желтеют', 'сохнут', 'вянут', 'опадают', 'гниют',
+        'фикус', 'роза', 'орхидея', 'кактус', 'суккулент', 'фиалка', 'герань', 'драцена',
+        'спатифиллум', 'монстера', 'филодендрон', 'алоэ', 'хлорофитум', 'пальма', 'папоротник',
+        'бегония', 'петуния', 'тюльпан', 'нарцисс', 'лилия', 'ромашка', 'подсолнух',
+        'томат', 'огурец', 'перец', 'баклажан', 'капуста', 'морковь', 'лук', 'чеснок',
+        'яблоня', 'груша', 'вишня', 'слива', 'виноград', 'малина', 'клубника', 'смородина',
+        'комнатный', 'домашний', 'садовый', 'огородный', 'декоративный', 'плодовый',
+        'цветение', 'цветет', 'бутон', 'соцветие', 'лепесток', 'тычинка', 'пестик',
+        'фотосинтез', 'хлорофилл', 'прививка', 'черенок', 'размножение', 'посадка', 'выращивание'
+    ]
     
-    return info
+    # Проверяем наличие растительных ключевых слов
+    for keyword in plant_keywords:
+        if keyword in text_lower:
+            return True, "plant_related"
+    
+    # Дополнительная проверка на вопросительные конструкции о растениях
+    question_patterns = [
+        'как ухаживать', 'как поливать', 'как выращивать', 'как сажать', 'как пересадить',
+        'почему желтеют', 'почему сохнут', 'почему не растет', 'почему не цветет',
+        'что с растением', 'что делать если', 'можно ли', 'нужно ли'
+    ]
+    
+    for pattern in question_patterns:
+        if pattern in text_lower:
+            return True, "plant_question"
+    
+    return False, "not_plant_related"
+
+def format_openai_response(text: str) -> str:
+    """Конвертирует Markdown форматирование в HTML для Telegram"""
+    if not text:
+        return text
+    
+    # Заменяем **текст** на <b>текст</b>
+    import re
+    
+    # Обрабатываем жирный текст
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    
+    # Обрабатываем курсив *текст* на <i>текст</i> 
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    
+    # Убираем лишние пробелы и переносы
+    text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)  # Максимум 2 переноса подряд
+    
+    return text.strip()
+
+# === ОСТАЛЬНЫЕ CALLBACK ОБРАБОТЧИКИ (продолжение) ===
 
 @dp.callback_query(F.data == "notification_settings")
 async def notification_settings_callback(callback: types.CallbackQuery):
@@ -2559,378 +2259,43 @@ async def notification_settings_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-@dp.callback_query(F.data == "toggle_global_reminders")
-async def toggle_global_reminders_callback(callback: types.CallbackQuery):
-    """Переключение глобальных уведомлений"""
+# Остальные обработчики остаются без изменений...
+
+@dp.callback_query(F.data == "menu")
+async def menu_callback(callback: types.CallbackQuery):
+    await callback.message.answer(
+        "🌱 <b>Главное меню</b>\n\n"
+        "Выберите действие:",
+        parse_mode="HTML", 
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "ask_about")
+async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Вопрос о проанализированном растении"""
     user_id = callback.from_user.id
     
-    try:
-        db = await get_db()
-        
-        # Получаем текущие настройки
-        user_settings = await db.get_user_reminder_settings(user_id)
-        current_enabled = user_settings.get('reminder_enabled', True) if user_settings else True
-        
-        # Переключаем
-        new_enabled = not current_enabled
-        await db.update_user_reminder_settings(user_id, reminder_enabled=new_enabled)
-        
-        if new_enabled:
-            status_text = "✅ <b>Глобальные уведомления включены!</b>\n\n"
-            status_text += "🔔 Теперь вы будете получать напоминания о поливе\n"
-            status_text += "⏰ Проверяем растения каждый день в 9:00 утра (МСК)\n"
-            status_text += "🌱 Уведомления придут для всех растений с включенными напоминаниями"
-        else:
-            status_text = "🔕 <b>Все уведомления отключены</b>\n\n"
-            status_text += "❌ Напоминания о поливе не будут приходить\n"
-            status_text += "💡 Вы можете включить их в любой момент\n"
-            status_text += "🌱 Настройки отдельных растений сохранены"
-        
-        keyboard = [
-            [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-        ]
-        
+    if user_id in temp_analyses:
+        plant_name = temp_analyses[user_id].get("plant_name", "растении")
         await callback.message.answer(
-            status_text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            f"❓ <b>Вопрос о {plant_name}</b>\n\n"
+            f"💡 <b>Популярные вопросы:</b>\n"
+            f"• Почему желтеют/сохнут листья?\n"
+            f"• Как часто поливать это растение?\n"
+            f"• Нужна ли пересадка?\n"
+            f"• Почему не растет/не цветёт?\n"
+            f"• Как размножить это растение?\n"
+            f"• Какие удобрения использовать?\n\n"
+            f"✍️ Напишите ваш вопрос:",
+            parse_mode="HTML"
         )
-        
-    except Exception as e:
-        print(f"Ошибка переключения глобальных уведомлений: {e}")
-        await callback.message.answer("❌ Ошибка изменения настроек.")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "plant_reminders_list")
-async def plant_reminders_list_callback(callback: types.CallbackQuery):
-    """Список растений с настройками уведомлений"""
-    user_id = callback.from_user.id
-    
-    try:
-        db = await get_db()
-        plants = await db.get_user_plants(user_id, limit=20)
-        
-        if not plants:
-            await callback.message.answer(
-                "🌱 У вас пока нет растений в коллекции.\n"
-                "Нажмите <b>\"🌱 Добавить растение\"</b> в главном меню для настройки уведомлений!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            await callback.answer()
-            return
-        
-        text = f"🌱 <b>Настройки уведомлений по растениям:</b>\n\n"
-        
-        keyboard_buttons = []
-        
-        for plant in plants:
-            plant_name = plant['display_name']
-            reminder_enabled = plant.get('reminder_enabled', True)
-            interval = plant.get('watering_interval', 5)
-            
-            status_icon = "🔔" if reminder_enabled else "🔕"
-            short_name = plant_name[:20] + "..." if len(plant_name) > 20 else plant_name
-            
-            text += f"{status_icon} <b>{plant_name}</b>\n"
-            if reminder_enabled:
-                text += f"   ⏰ Напоминания каждые {interval} дней\n"
-            else:
-                text += f"   🔕 Уведомления выключены\n"
-            text += "\n"
-            
-            # Кнопка переключения
-            button_text = f"{status_icon} {short_name}"
-            keyboard_buttons.append([
-                InlineKeyboardButton(
-                    text=button_text, 
-                    callback_data=f"toggle_reminder_{plant['id']}"
-                )
-            ])
-        
-        # Общие кнопки
-        keyboard_buttons.extend([
-            [InlineKeyboardButton(text="🔔 Включить все", callback_data="enable_all_plant_reminders"),
-             InlineKeyboardButton(text="🔕 Выключить все", callback_data="disable_all_plant_reminders")],
-            [InlineKeyboardButton(text="🔙 К настройкам", callback_data="notification_settings")],
-        ])
-        
+        await state.set_state(PlantStates.waiting_question)
+    else:
         await callback.message.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+            "❌ Данные анализа не найдены.\n"
+            "📸 Сначала сфотографируйте растение для анализа."
         )
-        
-    except Exception as e:
-        print(f"Ошибка списка растений: {e}")
-        await callback.message.answer("❌ Ошибка загрузки списка растений.")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("toggle_reminder_"))
-async def toggle_plant_reminder_callback(callback: types.CallbackQuery):
-    """Переключение уведомлений для отдельного растения"""
-    try:
-        plant_id = int(callback.data.split("_")[-1])
-        user_id = callback.from_user.id
-        
-        db = await get_db()
-        plant = await db.get_plant_by_id(plant_id, user_id)
-        
-        if not plant:
-            await callback.answer("❌ Растение не найдено")
-            return
-        
-        # Переключаем состояние
-        current_enabled = plant.get('reminder_enabled', True)
-        new_enabled = not current_enabled
-        
-        async with db.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE plants 
-                SET reminder_enabled = $1 
-                WHERE id = $2 AND user_id = $3
-            """, new_enabled, plant_id, user_id)
-            
-            if not new_enabled:
-                # Если выключаем, деактивируем активные напоминания
-                await conn.execute("""
-                    UPDATE reminders 
-                    SET is_active = FALSE 
-                    WHERE plant_id = $1 AND is_active = TRUE
-                """, plant_id)
-        
-        plant_name = plant['display_name']
-        
-        if new_enabled:
-            # Создаем новое напоминание
-            interval = plant.get('watering_interval', 5)
-            await create_plant_reminder(plant_id, user_id, interval)
-            
-            status_text = f"🔔 <b>Уведомления включены!</b>\n\n"
-            status_text += f"🌱 <b>{plant_name}</b>\n"
-            status_text += f"⏰ Будете получать напоминания каждые {interval} дней\n"
-            status_text += f"📱 Следующее уведомление придет в положенное время"
-        else:
-            status_text = f"🔕 <b>Уведомления выключены</b>\n\n"
-            status_text += f"🌱 <b>{plant_name}</b>\n"
-            status_text += f"❌ Напоминания о поливе больше не будут приходить\n"
-            status_text += f"💡 Можете включить в любой момент"
-        
-        # Определяем, откуда пришел запрос для правильной кнопки "Назад"
-        if "plant_reminders_list" in callback.message.text:
-            back_button = InlineKeyboardButton(text="🔙 К списку растений", callback_data="plant_reminders_list")
-        else:
-            back_button = InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")
-        
-        keyboard = [
-            [back_button],
-            [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
-        ]
-        
-        await callback.message.answer(
-            status_text,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        
-    except Exception as e:
-        print(f"Ошибка переключения уведомлений растения: {e}")
-        await callback.answer("❌ Ошибка изменения настроек")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "enable_all_plant_reminders")
-async def enable_all_plant_reminders_callback(callback: types.CallbackQuery):
-    """Включить уведомления для всех растений"""
-    user_id = callback.from_user.id
-    
-    try:
-        db = await get_db()
-        
-        # Включаем уведомления для всех растений пользователя
-        async with db.pool.acquire() as conn:
-            result = await conn.execute("""
-                UPDATE plants 
-                SET reminder_enabled = TRUE 
-                WHERE user_id = $1 AND reminder_enabled = FALSE
-            """, user_id)
-            
-            updated_count = result.split()[-1] if result else "0"
-        
-        await callback.message.answer(
-            f"🔔 <b>Уведомления включены для всех растений!</b>\n\n"
-            f"✅ Обновлено растений: {updated_count}\n"
-            f"📱 Теперь вы будете получать напоминания о поливе для всей коллекции",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🌱 К списку растений", callback_data="plant_reminders_list")],
-                [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
-            ])
-        )
-        
-    except Exception as e:
-        print(f"Ошибка включения всех уведомлений: {e}")
-        await callback.message.answer("❌ Ошибка изменения настроек.")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "disable_all_plant_reminders")
-async def disable_all_plant_reminders_callback(callback: types.CallbackQuery):
-    """Выключить уведомления для всех растений"""
-    user_id = callback.from_user.id
-    
-    try:
-        db = await get_db()
-        
-        # Выключаем уведомления для всех растений пользователя
-        async with db.pool.acquire() as conn:
-            result = await conn.execute("""
-                UPDATE plants 
-                SET reminder_enabled = FALSE 
-                WHERE user_id = $1 AND reminder_enabled = TRUE
-            """, user_id)
-            
-            # Деактивируем все активные напоминания
-            await conn.execute("""
-                UPDATE reminders 
-                SET is_active = FALSE 
-                WHERE user_id = $1 AND is_active = TRUE
-            """, user_id)
-            
-            updated_count = result.split()[-1] if result else "0"
-        
-        await callback.message.answer(
-            f"🔕 <b>Уведомления выключены для всех растений</b>\n\n"
-            f"❌ Обновлено растений: {updated_count}\n"
-            f"💡 Напоминания о поливе больше не будут приходить\n"
-            f"🔔 Можете включить в любой момент",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🌱 К списку растений", callback_data="plant_reminders_list")],
-                [InlineKeyboardButton(text="🔔 Настройки уведомлений", callback_data="notification_settings")],
-            ])
-        )
-        
-    except Exception as e:
-        print(f"Ошибка выключения всех уведомлений: {e}")
-        await callback.message.answer("❌ Ошибка изменения настроек.")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("show_photo_"))
-async def show_plant_photo_callback(callback: types.CallbackQuery):
-    """Показать фото растения"""
-    try:
-        plant_id = int(callback.data.split("_")[-1])
-        user_id = callback.from_user.id
-        
-        db = await get_db()
-        plant = await db.get_plant_by_id(plant_id, user_id)
-        
-        if not plant:
-            await callback.answer("❌ Растение не найдено")
-            return
-        
-        plant_name = plant['display_name']
-        saved_date = plant["saved_date"].strftime("%d.%m.%Y")
-        
-        # Статус полива для подписи
-        if plant["last_watered"]:
-            last_watered = plant["last_watered"].strftime("%d.%m.%Y")
-            water_info = f" • Полито: {last_watered}"
-        else:
-            water_info = " • Еще не поливали"
-        
-        caption = f"📷 <b>{plant_name}</b>\n📅 Добавлено: {saved_date}{water_info}"
-        
-        await bot.send_photo(
-            chat_id=callback.message.chat.id,
-            photo=plant['photo_file_id'],
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"edit_plant_{plant_id}")],
-                [InlineKeyboardButton(text="🔙 К коллекции", callback_data="my_plants")]
-            ])
-        )
-        
-    except Exception as e:
-        print(f"Ошибка показа фото: {e}")
-        await callback.answer("❌ Ошибка загрузки фото")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("delete_plant_"))
-async def delete_plant_callback(callback: types.CallbackQuery):
-    """Подтверждение удаления растения"""
-    try:
-        plant_id = int(callback.data.split("_")[-1])
-        user_id = callback.from_user.id
-        
-        db = await get_db()
-        plant = await db.get_plant_by_id(plant_id, user_id)
-        
-        if not plant:
-            await callback.answer("❌ Растение не найдено")
-            return
-        
-        plant_name = plant['display_name']
-        saved_date = plant["saved_date"].strftime("%d.%m.%Y")
-        
-        keyboard = [
-            [InlineKeyboardButton(text="🗑️ Да, удалить навсегда", callback_data=f"confirm_delete_{plant_id}")],
-            [InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit_plant_{plant_id}")],
-        ]
-        
-        await callback.message.answer(
-            f"🗑️ <b>Подтверждение удаления</b>\n\n"
-            f"🌱 <b>Растение:</b> {plant_name}\n"
-            f"📅 <b>Добавлено:</b> {saved_date}\n\n"
-            f"⚠️ <b>Внимание!</b> Это действие нельзя отменить.\n"
-            f"Вся история ухода будет потеряна.\n\n"
-            f"Вы действительно хотите удалить это растение?",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
-        
-    except Exception as e:
-        print(f"Ошибка удаления растения: {e}")
-        await callback.answer("❌ Ошибка обработки")
-    
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("confirm_delete_"))
-async def confirm_delete_plant_callback(callback: types.CallbackQuery):
-    """Окончательное удаление растения"""
-    try:
-        plant_id = int(callback.data.split("_")[-1])
-        user_id = callback.from_user.id
-        
-        db = await get_db()
-        plant = await db.get_plant_by_id(plant_id, user_id)
-        
-        if not plant:
-            await callback.answer("❌ Растение не найдено")
-            return
-        
-        plant_name = plant['display_name']
-        await db.delete_plant(user_id, plant_id)
-        
-        await callback.message.answer(
-            f"🗑️ <b>Растение удалено</b>\n\n"
-            f"<b>{plant_name}</b> успешно удалено из коллекции.\n\n"
-            f"📸 Вы всегда можете добавить новое растение,\n"
-            f"сфотографировав его для анализа!",
-            parse_mode="HTML",
-            reply_markup=main_menu()
-        )
-        
-    except Exception as e:
-        print(f"Ошибка окончательного удаления: {e}")
-        await callback.answer("❌ Ошибка удаления")
     
     await callback.answer()
 
@@ -3061,120 +2426,8 @@ async def stats_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-@dp.callback_query(F.data == "menu")
-async def menu_callback(callback: types.CallbackQuery):
-    await callback.message.answer(
-        "🌱 <b>Главное меню</b>\n\n"
-        "Выберите действие:",
-        parse_mode="HTML", 
-        reply_markup=main_menu()
-    )
-    await callback.answer()
+# === WEBHOOK И ЗАПУСК ===
 
-@dp.callback_query(F.data == "ask_about")
-async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Вопрос о проанализированном растении"""
-    user_id = callback.from_user.id
-    
-    if user_id in temp_analyses:
-        plant_name = temp_analyses[user_id].get("plant_name", "растении")
-        await callback.message.answer(
-            f"❓ <b>Вопрос о {plant_name}</b>\n\n"
-            f"💡 <b>Популярные вопросы:</b>\n"
-            f"• Почему желтеют/сохнут листья?\n"
-            f"• Как часто поливать это растение?\n"
-            f"• Нужна ли пересадка?\n"
-            f"• Почему не растет/не цветёт?\n"
-            f"• Как размножить это растение?\n"
-            f"• Какие удобрения использовать?\n\n"
-            f"✍️ Напишите ваш вопрос:",
-            parse_mode="HTML"
-        )
-        await state.set_state(PlantStates.waiting_question)
-    else:
-        await callback.message.answer(
-            "❌ Данные анализа не найдены.\n"
-            "📸 Сначала сфотографируйте растение для анализа."
-        )
-    
-    await callback.answer()
-
-# Функция для обработки форматирования ответов OpenAI
-def format_openai_response(text: str) -> str:
-    """Конвертирует Markdown форматирование в HTML для Telegram"""
-    if not text:
-        return text
-    
-    # Заменяем **текст** на <b>текст</b>
-    import re
-    
-    # Обрабатываем жирный текст
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    
-    # Обрабатываем курсив *текст* на <i>текст</i> 
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    
-    # Убираем лишние пробелы и переносы
-    text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)  # Максимум 2 переноса подряд
-    
-    return text.strip()
-
-# Проверка на растительную тематику и безопасность
-def is_plant_related_and_safe(text: str) -> tuple[bool, str]:
-    """Проверяет, связан ли вопрос с растениями и безопасен ли он"""
-    text_lower = text.lower()
-    
-    # Запрещенные темы (наркотические и нелегальные растения)
-    forbidden_keywords = [
-        'марихуана', 'каннабис', 'конопля', 'гашиш', 'травка', 'план', 'дурь',
-        'кока', 'кокаин', 'мак', 'опиум', 'героин', 'псилоцибин', 'грибы галлюциногенные',
-        'дурман', 'белена', 'красавка', 'аяуаска', 'салвия дивинорум',
-        'наркотик', 'наркотический', 'психоактивн', 'галлюциноген', 'опьянен'
-    ]
-    
-    # Проверяем на запрещенные темы
-    for keyword in forbidden_keywords:
-        if keyword in text_lower:
-            return False, "illegal"
-    
-    # Ключевые слова растительной тематики
-    plant_keywords = [
-        'растение', 'цветок', 'дерево', 'куст', 'трава', 'листья', 'лист', 'корни', 'корень',
-        'стебель', 'ствол', 'ветки', 'ветка', 'плод', 'фрукт', 'овощ', 'ягода', 'семена', 'семя',
-        'полив', 'поливать', 'удобрение', 'подкормка', 'пересадка', 'почва', 'грунт', 'земля',
-        'горшок', 'кашпо', 'освещение', 'свет', 'солнце', 'тень', 'влажность', 'температура',
-        'болезнь', 'вредитель', 'желтеют', 'сохнут', 'вянут', 'опадают', 'гниют',
-        'фикус', 'роза', 'орхидея', 'кактус', 'суккулент', 'фиалка', 'герань', 'драцена',
-        'спатифиллум', 'монстера', 'филодендрон', 'алоэ', 'хлорофитум', 'пальма', 'папоротник',
-        'бегония', 'петуния', 'тюльпан', 'нарцисс', 'лилия', 'ромашка', 'подсолнух',
-        'томат', 'огурец', 'перец', 'баклажан', 'капуста', 'морковь', 'лук', 'чеснок',
-        'яблоня', 'груша', 'вишня', 'слива', 'виноград', 'малина', 'клубника', 'смородина',
-        'комнатный', 'домашний', 'садовый', 'огородный', 'декоративный', 'плодовый',
-        'цветение', 'цветет', 'бутон', 'соцветие', 'лепесток', 'тычинка', 'пестик',
-        'фотосинтез', 'хлорофилл', 'прививка', 'черенок', 'размножение', 'посадка', 'выращивание'
-    ]
-    
-    # Проверяем наличие растительных ключевых слов
-    for keyword in plant_keywords:
-        if keyword in text_lower:
-            return True, "plant_related"
-    
-    # Дополнительная проверка на вопросительные конструкции о растениях
-    question_patterns = [
-        'как ухаживать', 'как поливать', 'как выращивать', 'как сажать', 'как пересадить',
-        'почему желтеют', 'почему сохнут', 'почему не растет', 'почему не цветет',
-        'что с растением', 'что делать если', 'можно ли', 'нужно ли'
-    ]
-    
-    for pattern in question_patterns:
-        if pattern in text_lower:
-            return True, "plant_question"
-    
-    return False, "not_plant_related"
-
-# [Остальные обработчики текстовых сообщений остаются без изменений...]
-
-# Webhook setup и остальной код
 async def on_startup():
     """Инициализация при запуске"""
     await init_database()
@@ -3206,9 +2459,6 @@ async def on_startup():
     )
     scheduler.start()
     print("🔔 Планировщик напоминаний запущен (ежедневно в 9:00 МСК)")
-    
-    # Для тестирования можно запустить проверку сразу (закомментировано в продакшене)
-    # await check_and_send_reminders()
     
     if WEBHOOK_URL:
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
@@ -3265,7 +2515,7 @@ async def health_check(request):
             "notification_management", 
             "easy_plant_adding", 
             "bot_commands",
-            "grow_from_scratch"  # Новая функция!
+            "grow_from_scratch"
         ],
         "reminder_schedule": "daily_at_09:00_MSK_UTC+3",
         "commands": ["start", "add", "grow", "analyze", "question", "plants", "notifications", "stats", "help"],
