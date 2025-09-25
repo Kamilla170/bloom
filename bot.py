@@ -101,6 +101,12 @@ def get_moscow_date():
     """Получить текущую дату в московской зоне"""
     return get_moscow_now().date()
 
+def moscow_to_naive(moscow_datetime):
+    """Конвертировать московское время в naive datetime для PostgreSQL"""
+    if moscow_datetime.tzinfo is not None:
+        return moscow_datetime.replace(tzinfo=None)
+    return moscow_datetime
+
 # === СИСТЕМА НАПОМИНАНИЙ ===
 
 async def check_and_send_reminders():
@@ -234,6 +240,8 @@ async def send_growing_reminder(growing_row):
         
         # Отмечаем что напоминание отправлено
         moscow_now = get_moscow_now()
+        moscow_now_naive = moscow_now.replace(tzinfo=None)  # Конвертируем в naive
+        
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO reminders (user_id, growing_plant_id, reminder_type, next_date, last_sent, stage_number)
@@ -243,7 +251,7 @@ async def send_growing_reminder(growing_row):
                 DO UPDATE SET 
                     last_sent = $4,
                     send_count = COALESCE(reminders.send_count, 0) + 1
-            """, user_id, growing_id, reminder_type, moscow_now, next_stage)
+            """, user_id, growing_id, reminder_type, moscow_now_naive, next_stage)
         
         print(f"📤 Отправлено напоминание по выращиванию пользователю {user_id} для {plant_name}")
         
@@ -340,11 +348,14 @@ async def create_plant_reminder(plant_id: int, user_id: int, interval_days: int 
         moscow_now = get_moscow_now()
         next_watering = moscow_now + timedelta(days=interval_days)
         
+        # Конвертируем в naive datetime для PostgreSQL
+        next_watering_naive = next_watering.replace(tzinfo=None)
+        
         await db.create_reminder(
             user_id=user_id,
             plant_id=plant_id,
             reminder_type='watering',
-            next_date=next_watering
+            next_date=next_watering_naive
         )
         
     except Exception as e:
@@ -813,13 +824,16 @@ async def finalize_growing_setup(message_obj, state: FSMContext, photo_file_id: 
         # Создаем первоначальное напоминание (через 3 дня)
         moscow_now = get_moscow_now()
         next_reminder = moscow_now + timedelta(days=3)
-        print(f"DEBUG: Creating reminder for {next_reminder}")
+        
+        # Конвертируем в naive datetime для PostgreSQL
+        next_reminder_naive = next_reminder.replace(tzinfo=None)
+        print(f"DEBUG: Creating reminder for {next_reminder_naive}")
         
         await db.create_growing_reminder(
             growing_id=growing_id,
             user_id=user_id,
             reminder_type="start_stage",
-            next_date=next_reminder,
+            next_date=next_reminder_naive,
             stage_number=1
         )
         print("DEBUG: Created reminder")
