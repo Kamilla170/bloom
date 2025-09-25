@@ -87,6 +87,8 @@ PLANT_IDENTIFICATION_PROMPT = """
 class PlantStates(StatesGroup):
     waiting_question = State()
     editing_plant_name = State()
+    choosing_plant_to_grow = State()
+    planting_setup = State()
 
 # Функция для получения текущего московского времени
 def get_moscow_now():
@@ -238,7 +240,125 @@ async def create_plant_reminder(plant_id: int, user_id: int, interval_days: int 
     except Exception as e:
         print(f"Ошибка создания напоминания: {e}")
 
-# === ОБНОВЛЕННЫЕ CALLBACK ОБРАБОТЧИКИ ===
+# === ФУНКЦИИ ДЛЯ ВЫРАЩИВАНИЯ РАСТЕНИЙ ===
+
+def is_growing_request(text: str) -> tuple[bool, str]:
+    """Определяет запрос на выращивание растения"""
+    text_lower = text.lower()
+    
+    # Ключевые слова для выращивания
+    growing_keywords = [
+        'вырастить', 'выращивать', 'выращиваю', 'посадить', 'сажать', 'сажаю', 
+        'посеять', 'сеять', 'сею', 'размножить', 'размножаю', 'укоренить',
+        'проращивать', 'прорастить', 'черенок', 'семена', 'семечко', 'луковица',
+        'рассада', 'саженец', 'росток', 'всходы', 'прорастание'
+    ]
+    
+    # Проверяем наличие ключевых слов выращивания
+    for keyword in growing_keywords:
+        if keyword in text_lower:
+            return True, "growing"
+    
+    # Проверяем конструкции типа "как вырастить X", "хочу посадить Y"
+    growing_patterns = [
+        'как вырастить', 'как посадить', 'как посеять', 'хочу вырастить',
+        'хочу посадить', 'хочу посеять', 'можно ли вырастить', 'где взять семена'
+    ]
+    
+    for pattern in growing_patterns:
+        if pattern in text_lower:
+            return True, "growing_question"
+    
+    return False, "not_growing"
+
+def extract_plant_name_from_text(text: str) -> str:
+    """Извлекает название растения из текста"""
+    text_lower = text.lower()
+    
+    # Популярные растения для выращивания
+    common_plants = {
+        'базилик': 'базилик', 'петрушка': 'петрушка', 'укроп': 'укроп', 
+        'салат': 'салат', 'руккола': 'руккола', 'кориандр': 'кориандр',
+        'помидор': 'томаты', 'томат': 'томаты', 'огурец': 'огурцы',
+        'перец': 'перец', 'баклажан': 'баклажаны',
+        'подсолнух': 'подсолнечник', 'настурция': 'настурция', 'бархатцы': 'бархатцы',
+        'фикус': 'фикус', 'герань': 'герань', 'традесканция': 'традесканция',
+        'суккулент': 'суккуленты', 'кактус': 'кактус',
+        'тюльпан': 'тюльпаны', 'гиацинт': 'гиацинты', 'нарцисс': 'нарциссы',
+        'лилия': 'лилии', 'гладиолус': 'гладиолусы'
+    }
+    
+    for key, value in common_plants.items():
+        if key in text_lower:
+            return value
+    
+    return None
+
+def get_method_name(method: str) -> str:
+    """Возвращает читаемое название метода"""
+    names = {
+        "seeds": "из семян 🌱",
+        "cutting": "из черенка 🌿", 
+        "bulb": "из луковицы 🌷",
+        "custom": "индивидуальный подход 📝"
+    }
+    return names.get(method, "неизвестный метод")
+
+async def get_growing_plan_from_ai(plant_name: str, growth_method: str) -> str:
+    """Получает план выращивания от ИИ"""
+    if not openai_client:
+        return None
+    
+    try:
+        method_context = {
+            "seeds": "выращивание из семян",
+            "cutting": "выращивание из черенка",
+            "bulb": "выращивание из луковицы",
+            "custom": "выращивание (метод не указан)"
+        }
+        
+        prompt = f"""
+Создайте краткий план выращивания растения "{plant_name}" методом {method_context.get(growth_method, "стандартный")}.
+
+Структура ответа:
+🌱 РАСТЕНИЕ: [название]
+📋 СЛОЖНОСТЬ: [легко/средне/сложно] 
+⏰ ВРЕМЯ ДО РЕЗУЛЬТАТА: [сроки]
+
+📝 КРАТКИЙ ПЛАН:
+1. [этап 1] - [сроки]
+2. [этап 2] - [сроки] 
+3. [этап 3] - [сроки]
+
+💡 ОСОБЕННОСТИ:
+• [особенность 1]
+• [особенность 2]
+
+⚠️ ВАЖНО: [главный совет]
+
+Отвечайте кратко, практично, на русском языке. Без использования ** для выделения.
+        """
+        
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "Вы - эксперт по выращиванию растений. Создавайте практичные краткие планы выращивания для домашних условий."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=800,
+            temperature=0.3
+        )
+        
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        print(f"Ошибка получения плана выращивания: {e}")
+        return None
+
+# === ОБРАБОТЧИКИ CALLBACK ===
 
 @dp.callback_query(F.data.startswith("snooze_"))
 async def snooze_reminder_callback(callback: types.CallbackQuery):
@@ -271,10 +391,149 @@ async def snooze_reminder_callback(callback: types.CallbackQuery):
     except Exception as e:
         print(f"Ошибка отложения напоминания: {e}")
         await callback.answer("❌ Ошибка обработки")
-    
+
+@dp.callback_query(F.data == "continue_as_question")
+async def continue_as_question_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Продолжить как обычный вопрос"""
+    await callback.message.answer(
+        "❓ <b>Хорошо, обрабатываю как вопрос о растениях</b>\n\n"
+        "✍️ Напишите ваш вопрос:",
+        parse_mode="HTML"
+    )
+    await state.set_state(PlantStates.waiting_question)
     await callback.answer()
 
-# Обновленная функция сохранения растения
+@dp.callback_query(F.data.startswith("grow_"))
+async def grow_method_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора метода выращивания"""
+    method = callback.data.split("_")[-1]  # seeds, cutting, bulb, custom
+    
+    method_names = {
+        "seeds": "из семян 🌱",
+        "cutting": "из черенка 🌿", 
+        "bulb": "из луковицы 🌷",
+        "custom": "свой вариант 📝"
+    }
+    
+    # Сохраняем выбранный метод
+    await state.update_data(growth_method=method)
+    await state.set_state(PlantStates.choosing_plant_to_grow)
+    
+    if method == "seeds":
+        examples = "Например: базилик, петрушка, укроп, подсолнух, бархатцы, настурция"
+    elif method == "cutting":
+        examples = "Например: фикус, герань, традесканция, суккуленты, розмарин"
+    elif method == "bulb":
+        examples = "Например: тюльпаны, гиацинты, нарциссы, лилии, гладиолусы"
+    else:
+        examples = "Опишите подробно что и как хотите вырастить"
+    
+    await callback.message.answer(
+        f"🌿 <b>Выращивание {method_names[method]}</b>\n\n"
+        f"✍️ Напишите название растения, которое хотите вырастить:\n\n"
+        f"💡 {examples}\n\n"
+        f"Я дам подробную инструкцию и буду сопровождать "
+        f"весь процесс от посадки до взрослого растения!",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(StateFilter(PlantStates.choosing_plant_to_grow))
+async def handle_plant_choice_for_growing(message: types.Message, state: FSMContext):
+    """Обработка выбора растения для выращивания"""
+    try:
+        plant_name = message.text.strip()
+        data = await state.get_data()
+        growth_method = data.get('growth_method', 'seeds')
+        
+        if len(plant_name) < 2:
+            await message.reply(
+                "🤔 Слишком короткое название растения.\n"
+                "Попробуйте еще раз, например: 'базилик' или 'герань'"
+            )
+            return
+        
+        if len(plant_name) > 100:
+            await message.reply(
+                "📝 Слишком длинное описание.\n"
+                "Напишите название покороче, например: 'фикус из черенка'"
+            )
+            return
+        
+        # Получаем персональный план выращивания от GPT
+        processing_msg = await message.reply(
+            f"🧠 <b>Готовлю персональный план выращивания...</b>\n\n"
+            f"🌱 Растение: {plant_name}\n"
+            f"🌿 Метод: {get_method_name(growth_method)}\n\n"
+            f"⏳ Анализирую особенности и составляю инструкцию...",
+            parse_mode="HTML"
+        )
+        
+        growing_plan = await get_growing_plan_from_ai(plant_name, growth_method)
+        
+        await processing_msg.delete()
+        
+        if growing_plan:
+            # Сохраняем план выращивания
+            await state.update_data(
+                plant_name=plant_name,
+                growing_plan=growing_plan,
+                growth_method=growth_method
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton(text="🚀 Начать выращивание!", callback_data="start_growing")],
+                [InlineKeyboardButton(text="📝 Выбрать другое растение", callback_data="grow_from_scratch")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+            ]
+            
+            await message.reply(
+                f"🌱 <b>Персональный план готов!</b>\n\n{growing_plan}\n\n"
+                f"Готовы начать выращивание? Я буду сопровождать "
+                f"вас на каждом этапе с персональными напоминаниями!",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+        else:
+            await message.reply(
+                f"🤔 <b>Не удалось составить план для '{plant_name}'</b>\n\n"
+                f"Попробуйте:\n"
+                f"• Написать название по-другому\n"
+                f"• Выбрать более популярное растение\n"
+                f"• Или задать вопрос в свободной форме",
+                reply_markup=main_menu()
+            )
+        
+        await state.clear()
+        
+    except Exception as e:
+        print(f"Ошибка обработки выбора растения: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при обработке.\n"
+            "Попробуйте еще раз или выберите другое растение.",
+            reply_markup=main_menu()
+        )
+        await state.clear()
+
+@dp.callback_query(F.data == "start_growing")
+async def start_growing_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Начать процесс выращивания"""
+    await callback.message.answer(
+        "🚀 <b>Отлично! Начинаем выращивание!</b>\n\n"
+        "Функция пока в разработке, но скоро будет доступна:\n"
+        "• 📅 Создание растения в коллекции\n"
+        "• ⏰ Настройка напоминаний по этапам\n"
+        "• 📊 Отслеживание прогресса\n"
+        "• 📸 Дневник роста\n\n"
+        "Следите за обновлениями!",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+    await state.clear()
+
+# === ОБНОВЛЕННЫЕ CALLBACK ОБРАБОТЧИКИ ===
+
 @dp.callback_query(F.data == "save_plant")
 async def save_plant_callback(callback: types.CallbackQuery):
     """Сохранение растения с персональными рекомендациями по поливу"""
@@ -352,7 +611,6 @@ async def save_plant_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# Обновленная функция полива
 @dp.callback_query(F.data.startswith("water_plant_"))
 async def water_single_plant_callback(callback: types.CallbackQuery):
     """Полив отдельного растения с обновлением напоминания"""
@@ -393,12 +651,12 @@ async def water_single_plant_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# === ОСТАЛЬНЫЕ ФУНКЦИИ (без изменений) ===
+# === КЛАВИАТУРЫ ===
 
-# Клавиатуры
 def main_menu():
     keyboard = [
         [InlineKeyboardButton(text="🌱 Добавить растение", callback_data="add_plant")],
+        [InlineKeyboardButton(text="🌿 Вырастить с нуля", callback_data="grow_from_scratch")],
         [InlineKeyboardButton(text="📸 Анализ растения", callback_data="analyze")],
         [InlineKeyboardButton(text="❓ Задать вопрос", callback_data="question")],
         [InlineKeyboardButton(text="🌿 Мои растения", callback_data="my_plants")],
@@ -409,840 +667,7 @@ def main_menu():
 def after_analysis():
     keyboard = [
         [InlineKeyboardButton(text="✅ Добавить в коллекцию", callback_data="save_plant")],
-        [InlineKeyboardButton(text="❓ Вопрос о растении", callback_data="ask_about")],
-        [InlineKeyboardButton(text="🔄 Повторный анализ", callback_data="reanalyze")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
-# Функция для извлечения персональных рекомендаций по поливу
-def extract_personal_watering_info(analysis_text: str) -> dict:
-    """Извлекает персональную информацию о поливе из анализа"""
-    watering_info = {
-        "interval_days": 5,  # по умолчанию
-        "personal_recommendations": "",
-        "current_state": "",
-        "needs_adjustment": False
-    }
-    
-    if not analysis_text:
-        return watering_info
-    
-    lines = analysis_text.split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        
-        # Извлекаем персональный интервал
-        if line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
-            interval_text = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
-            # Ищем числа в тексте
-            import re
-            numbers = re.findall(r'\d+', interval_text)
-            if numbers:
-                try:
-                    interval = int(numbers[0])
-                    # Ограничиваем разумными пределами
-                    if 1 <= interval <= 15:
-                        watering_info["interval_days"] = interval
-                except:
-                    pass
-        
-        # Извлекаем анализ текущего состояния
-        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
-            current_state = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
-            watering_info["current_state"] = current_state
-            # Проверяем, нужна ли корректировка
-            if any(word in current_state.lower() for word in ["переувлажн", "перелив", "недополит", "пересушен", "проблем"]):
-                watering_info["needs_adjustment"] = True
-        
-        # Извлекаем персональные рекомендации
-        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
-            recommendations = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
-            watering_info["personal_recommendations"] = recommendations
-            
-    return watering_info
-
-# Улучшенное форматирование анализа
-def format_plant_analysis(raw_text: str, confidence: float = None) -> str:
-    """Форматирование детального анализа растения"""
-    
-    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-    formatted = ""
-    
-    # Парсим структурированный ответ
-    plant_name = "Неизвестное растение"
-    confidence_level = confidence or 0
-    
-    for line in lines:
-        if line.startswith("РАСТЕНИЕ:"):
-            plant_name = line.replace("РАСТЕНИЕ:", "").strip()
-            # Убираем лишнюю информацию в скобках для заголовка
-            display_name = plant_name.split("(")[0].strip()
-            formatted += f"🌿 <b>{display_name}</b>\n"
-            if "(" in plant_name:
-                latin_name = plant_name[plant_name.find("(")+1:plant_name.find(")")]
-                formatted += f"🏷️ <i>{latin_name}</i>\n"
-            
-        elif line.startswith("УВЕРЕННОСТЬ:"):
-            conf = line.replace("УВЕРЕННОСТЬ:", "").strip()
-            try:
-                confidence_level = float(conf.replace("%", ""))
-                if confidence_level >= 80:
-                    conf_icon = "🎯"
-                elif confidence_level >= 60:
-                    conf_icon = "🎪"
-                else:
-                    conf_icon = "🤔"
-                formatted += f"{conf_icon} <b>Уверенность:</b> {conf}\n\n"
-            except:
-                formatted += f"🎪 <b>Уверенность:</b> {conf}\n\n"
-                
-        elif line.startswith("ПРИЗНАКИ:"):
-            signs = line.replace("ПРИЗНАКИ:", "").strip()
-            formatted += f"🔍 <b>Признаки:</b> {signs}\n"
-            
-        elif line.startswith("СЕМЕЙСТВО:"):
-            family = line.replace("СЕМЕЙСТВО:", "").strip()
-            formatted += f"👨‍👩‍👧‍👦 <b>Семейство:</b> {family}\n"
-            
-        elif line.startswith("РОДИНА:"):
-            origin = line.replace("РОДИНА:", "").strip()
-            formatted += f"🌍 <b>Родина:</b> {origin}\n\n"
-            
-        elif line.startswith("СОСТОЯНИЕ:"):
-            condition = line.replace("СОСТОЯНИЕ:", "").strip()
-            if any(word in condition.lower() for word in ["здоров", "хорош", "отличн", "норм"]):
-                icon = "✅"
-            elif any(word in condition.lower() for word in ["проблем", "болен", "плох", "стресс"]):
-                icon = "⚠️"
-            else:
-                icon = "ℹ️"
-            formatted += f"{icon} <b>Состояние:</b> {condition}\n"
-            
-        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
-            watering_analysis = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
-            if any(word in watering_analysis.lower() for word in ["переувлажн", "перелив"]):
-                icon = "🔴"
-            elif any(word in watering_analysis.lower() for word in ["недополит", "пересушен"]):
-                icon = "🟡"
-            else:
-                icon = "🟢"
-            formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
-            
-        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
-            watering_rec = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
-            formatted += f"💧 <b>Персональные рекомендации по поливу:</b> {watering_rec}\n"
-            
-        elif line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
-            interval = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
-            formatted += f"⏰ <b>Рекомендуемый интервал:</b> {interval} дней\n\n"
-            
-        elif line.startswith("СВЕТ:"):
-            light = line.replace("СВЕТ:", "").strip()
-            formatted += f"☀️ <b>Освещение:</b> {light}\n"
-            
-        elif line.startswith("ТЕМПЕРАТУРА:"):
-            temp = line.replace("ТЕМПЕРАТУРА:", "").strip()
-            formatted += f"🌡️ <b>Температура:</b> {temp}\n"
-            
-        elif line.startswith("ВЛАЖНОСТЬ:"):
-            humidity = line.replace("ВЛАЖНОСТЬ:", "").strip()
-            formatted += f"💨 <b>Влажность:</b> {humidity}\n"
-            
-        elif line.startswith("ПОДКОРМКА:"):
-            feeding = line.replace("ПОДКОРМКА:", "").strip()
-            formatted += f"🍽️ <b>Подкормка:</b> {feeding}\n"
-            
-        elif line.startswith("ПЕРЕСАДКА:"):
-            repot = line.replace("ПЕРЕСАДКА:", "").strip()
-            formatted += f"🪴 <b>Пересадка:</b> {repot}\n"
-            
-        elif line.startswith("ПРОБЛЕМЫ:"):
-            problems = line.replace("ПРОБЛЕМЫ:", "").strip()
-            formatted += f"\n⚠️ <b>Возможные проблемы:</b> {problems}\n"
-            
-        elif line.startswith("СОВЕТ:"):
-            advice = line.replace("СОВЕТ:", "").strip()
-            formatted += f"\n💡 <b>Персональный совет:</b> {advice}"
-    
-    # Добавляем индикатор качества распознавания
-    if confidence_level >= 80:
-        formatted += "\n\n🏆 <i>Высокая точность распознавания</i>"
-    elif confidence_level >= 60:
-        formatted += "\n\n👍 <i>Хорошее распознавание</i>"
-    else:
-        formatted += "\n\n🤔 <i>Требуется дополнительная идентификация</i>"
-    
-    formatted += "\n💾 <i>Сохраните для персональных напоминаний!</i>"
-    
-    return formatted
-
-# Обработка изображений
-async def optimize_image_for_analysis(image_data: bytes, high_quality: bool = True) -> bytes:
-    """Оптимизация изображения для анализа"""
-    try:
-        image = Image.open(BytesIO(image_data))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Для анализа используем более высокое качество
-        if high_quality:
-            # Увеличиваем размер для лучшего анализа
-            if max(image.size) < 1024:
-                # Увеличиваем маленькие изображения
-                ratio = 1024 / max(image.size)
-                new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
-                image = image.resize(new_size, Image.Resampling.LANCZOS)
-            elif max(image.size) > 2048:
-                # Уменьшаем очень большие
-                image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
-        else:
-            # Стандартная оптимизация
-            if max(image.size) > 1024:
-                image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-        
-        output = BytesIO()
-        # Повышенное качество для анализа
-        quality = 95 if high_quality else 85
-        image.save(output, format='JPEG', quality=quality, optimize=True)
-        return output.getvalue()
-    except Exception as e:
-        print(f"Ошибка оптимизации изображения: {e}")
-        return image_data
-
-# Улучшенный анализ через OpenAI GPT-4 Vision
-async def analyze_with_openai_advanced(image_data: bytes, user_question: str = None) -> dict:
-    """Продвинутый анализ через OpenAI GPT-4 Vision"""
-    if not openai_client:
-        return {"success": False, "error": "OpenAI API недоступен"}
-    
-    try:
-        optimized_image = await optimize_image_for_analysis(image_data, high_quality=True)
-        base64_image = base64.b64encode(optimized_image).decode('utf-8')
-        
-        prompt = PLANT_IDENTIFICATION_PROMPT
-        
-        if user_question:
-            prompt += f"\n\nДополнительно ответьте на вопрос пользователя: {user_question}"
-        
-        response = await openai_client.chat.completions.create(
-            model="gpt-4o",  # Используем последнюю модель
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Вы - ведущий эксперт-ботаник с 30-летним опытом идентификации комнатных и садовых растений. Вы способны точно определять виды растений по фотографиям и давать профессиональные рекомендации по уходу."
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}",
-                                "detail": "high"  # Высокое качество анализа
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=1200,
-            temperature=0.1  # Низкая температура для более точных ответов
-        )
-        
-        raw_analysis = response.choices[0].message.content
-        
-        # Проверяем качество ответа
-        if len(raw_analysis) < 100 or "не могу" in raw_analysis.lower() or "sorry" in raw_analysis.lower():
-            raise Exception("Некачественный ответ от OpenAI")
-        
-        # Извлекаем уверенность из ответа
-        confidence = 0
-        for line in raw_analysis.split('\n'):
-            if line.startswith("УВЕРЕННОСТЬ:"):
-                try:
-                    conf_str = line.replace("УВЕРЕННОСТЬ:", "").strip().replace("%", "")
-                    confidence = float(conf_str)
-                except:
-                    confidence = 70  # По умолчанию
-                break
-        
-        # Извлекаем название растения
-        plant_name = "Неизвестное растение"
-        for line in raw_analysis.split('\n'):
-            if line.startswith("РАСТЕНИЕ:"):
-                plant_name = line.replace("РАСТЕНИЕ:", "").strip()
-                break
-        
-        formatted_analysis = format_plant_analysis(raw_analysis, confidence)
-        
-        return {
-            "success": True,
-            "analysis": formatted_analysis,
-            "raw_analysis": raw_analysis,
-            "plant_name": plant_name,
-            "confidence": confidence,
-            "source": "openai_advanced"
-        }
-        
-    except Exception as e:
-        print(f"OpenAI Advanced API error: {e}")
-        return {"success": False, "error": str(e)}
-
-# Улучшенный анализ через Plant.id
-async def analyze_with_plantid_advanced(image_data: bytes) -> dict:
-    """Продвинутый анализ через Plant.id API"""
-    if not PLANTID_API_KEY:
-        return {"success": False, "error": "Plant.id API недоступен"}
-    
-    try:
-        import httpx
-        
-        optimized_image = await optimize_image_for_analysis(image_data, high_quality=True)
-        base64_image = base64.b64encode(optimized_image).decode('utf-8')
-        
-        # Более детальный запрос к Plant.id
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(
-                "https://api.plant.id/v2/identify",
-                json={
-                    "images": [f"data:image/jpeg;base64,{base64_image}"],
-                    "modifiers": [
-                        "crops_fast", 
-                        "similar_images", 
-                        "health_assessment",
-                        "disease_similar_images"
-                    ],
-                    "plant_language": "ru",
-                    "plant_net": "auto",
-                    "plant_details": [
-                        "common_names",
-                        "url", 
-                        "description",
-                        "taxonomy",
-                        "rank",
-                        "gbif_id",
-                        "inaturalist_id",
-                        "image",
-                        "synonyms",
-                        "edible_parts",
-                        "watering",
-                        "propagation_methods"
-                    ]
-                },
-                headers={
-                    "Content-Type": "application/json",
-                    "Api-Key": PLANTID_API_KEY
-                }
-            )
-        
-        if response.status_code != 200:
-            return {"success": False, "error": f"Plant.id API error: {response.status_code}"}
-        
-        data = response.json()
-        
-        if not data.get("suggestions") or len(data["suggestions"]) == 0:
-            return {"success": False, "error": "Растение не распознано"}
-        
-        # Берем лучший результат
-        suggestion = data["suggestions"][0]
-        plant_details = suggestion.get("plant_details", {})
-        
-        # Формируем детальный анализ
-        plant_name = suggestion.get("plant_name", "Неизвестное растение")
-        probability = suggestion.get("probability", 0) * 100
-        
-        # Получаем общие названия
-        common_names = plant_details.get("common_names", {})
-        russian_names = common_names.get("ru", [])
-        if russian_names:
-            display_name = russian_names[0]
-        else:
-            display_name = plant_name
-        
-        # Таксономия
-        taxonomy = plant_details.get("taxonomy", {})
-        family = taxonomy.get("family", "")
-        
-        # Оценка здоровья
-        health_info = "Требуется визуальная оценка"
-        if data.get("health_assessment"):
-            health = data["health_assessment"]
-            if health.get("is_healthy"):
-                health_prob = health["is_healthy"]["probability"]
-                if health_prob > 0.8:
-                    health_info = f"Растение выглядит здоровым ({health_prob*100:.0f}% уверенности)"
-                elif health_prob > 0.5:
-                    health_info = f"Возможны незначительные проблемы ({health_prob*100:.0f}% здоровья)"
-                else:
-                    health_info = f"Обнаружены проблемы со здоровьем ({health_prob*100:.0f}% здоровья)"
-                    
-                # Проверяем болезни
-                if health.get("diseases"):
-                    diseases = health["diseases"]
-                    if diseases:
-                        top_disease = diseases[0]
-                        disease_name = top_disease.get("name", "неизвестная проблема")
-                        disease_prob = top_disease.get("probability", 0) * 100
-                        if disease_prob > 30:
-                            health_info += f". Возможна проблема: {disease_name} ({disease_prob:.0f}%)"
-        
-        # Формируем специализированные рекомендации на основе Plant.id данных
-        watering_info = plant_details.get("watering", {})
-        personal_watering_rec = "Следуйте персональному режиму полива для этого экземпляра"
-        watering_analysis = "Состояние полива требует визуальной оценки"
-        
-        # Пытаемся определить интервал на основе типа растения
-        if "succulent" in plant_name.lower() or "cactus" in plant_name.lower():
-            watering_interval = 10
-            personal_watering_rec = "Как суккулент, поливайте редко но обильно, когда почва полностью высохнет"
-        elif any(word in display_name.lower() for word in ["папоротник", "спатифиллум", "фиалка"]):
-            watering_interval = 3
-            personal_watering_rec = "Как влаголюбивое растение, поддерживайте постоянную умеренную влажность почвы"
-        else:
-            watering_interval = 5
-            personal_watering_rec = "Поливайте когда верхний слой почвы подсохнет на 2-3 см"
-        
-        # Создаем детальный анализ
-        analysis_text = f"""
-РАСТЕНИЕ: {display_name} ({plant_name})
-УВЕРЕННОСТЬ: {probability:.0f}%
-ПРИЗНАКИ: Идентифицировано по форме листьев, характеру роста и морфологическим особенностям
-СЕМЕЙСТВО: {family if family else 'Не определено'}
-РОДИНА: {plant_details.get('description', {}).get('value', 'Информация недоступна')[:100] + '...' if plant_details.get('description', {}).get('value') else 'Не определено'}
-
-СОСТОЯНИЕ: {health_info}
-ПОЛИВ_АНАЛИЗ: {watering_analysis}
-ПОЛИВ_РЕКОМЕНДАЦИИ: {personal_watering_rec}
-ПОЛИВ_ИНТЕРВАЛ: {watering_interval}
-СВЕТ: Подберите освещение согласно требованиям данного вида
-ТЕМПЕРАТУРА: 18-24°C (уточните для конкретного вида)
-ВЛАЖНОСТЬ: Умеренная влажность воздуха 40-60%
-ПОДКОРМКА: В период роста каждые 2-4 недели комплексным удобрением
-ПЕРЕСАДКА: Молодые растения ежегодно, взрослые - каждые 2-3 года
-
-ПРОБЛЕМЫ: {disease_name if 'disease_name' in locals() else 'Следите за типичными для данного вида вредителями и болезнями'}
-СОВЕТ: Изучите конкретные потребности {display_name} для оптимального ухода - это поможет растению полноценно развиваться
-        """.strip()
-        
-        formatted_analysis = format_plant_analysis(analysis_text, probability)
-        
-        return {
-            "success": True,
-            "analysis": formatted_analysis,
-            "raw_analysis": analysis_text,
-            "plant_name": display_name,
-            "confidence": probability,
-            "source": "plantid_advanced",
-            "plant_details": plant_details
-        }
-        
-    except Exception as e:
-        print(f"Plant.id Advanced API error: {e}")
-        return {"success": False, "error": str(e)}
-
-# Основная функция анализа с умным fallback
-async def analyze_plant_image(image_data: bytes, user_question: str = None, retry_count: int = 0) -> dict:
-    """Интеллектуальный анализ изображения растения"""
-    
-    # Попытка 1: OpenAI GPT-4 Vision (приоритет)
-    print("🔍 Попытка анализа через OpenAI GPT-4 Vision...")
-    openai_result = await analyze_with_openai_advanced(image_data, user_question)
-    
-    if openai_result["success"] and openai_result.get("confidence", 0) >= 60:
-        print(f"✅ OpenAI успешно распознал растение с {openai_result.get('confidence')}% уверенностью")
-        return openai_result
-    
-    # Попытка 2: Plant.id API 
-    print("🌿 Попытка анализа через Plant.id...")
-    plantid_result = await analyze_with_plantid_advanced(image_data)
-    
-    if plantid_result["success"] and plantid_result.get("confidence", 0) >= 50:
-        print(f"✅ Plant.id успешно распознал растение с {plantid_result.get('confidence')}% уверенностью")
-        return plantid_result
-    
-    # Попытка 3: Комбинированный подход - используем лучший из результатов
-    best_result = None
-    best_confidence = 0
-    
-    if openai_result["success"]:
-        openai_conf = openai_result.get("confidence", 0)
-        if openai_conf > best_confidence:
-            best_result = openai_result
-            best_confidence = openai_conf
-    
-    if plantid_result["success"]:
-        plantid_conf = plantid_result.get("confidence", 0)
-        if plantid_conf > best_confidence:
-            best_result = plantid_result  
-            best_confidence = plantid_conf
-    
-    if best_result and best_confidence > 30:
-        print(f"📊 Использую лучший результат с {best_confidence}% уверенностью")
-        return best_result
-    
-    # Повторная попытка с измененными параметрами (если еще не пробовали)
-    if retry_count == 0:
-        print("🔄 Повторная попытка анализа...")
-        return await analyze_plant_image(image_data, user_question, retry_count + 1)
-    
-    # Fallback с указанием проблемы
-    print("⚠️ Все методы анализа не дали уверенного результата")
-    
-    fallback_text = """
-РАСТЕНИЕ: Комнатное растение (требуется дополнительная идентификация)
-УВЕРЕННОСТЬ: Низкая - рекомендуется повторная фотография
-ПРИЗНАКИ: Недостаточно данных для точной идентификации
-СЕМЕЙСТВО: Не определено
-РОДИНА: Не определено
-
-СОСТОЯНИЕ: Требуется визуальный осмотр листьев, стебля и корневой системы
-ПОЛИВ_АНАЛИЗ: Невозможно оценить состояние полива без качественного фото
-ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы пальцем - поливайте когда верхний слой подсох на 2-3 см
-ПОЛИВ_ИНТЕРВАЛ: 5
-СВЕТ: Большинство комнатных растений предпочитают яркий рассеянный свет
-ТЕМПЕРАТУРА: 18-24°C - стандартный диапазон для комнатных растений
-ВЛАЖНОСТЬ: 40-60% влажности воздуха
-ПОДКОРМКА: В весенне-летний период раз в 2-4 недели
-ПЕРЕСАДКА: Молодые растения ежегодно, взрослые - по мере необходимости
-
-ПРОБЛЕМЫ: Наблюдайте за изменениями листьев - они покажут проблемы с уходом
-СОВЕТ: Для точной идентификации сделайте фото при хорошем освещении, показав листья крупным планом
-    """.strip()
-    
-    formatted_analysis = format_plant_analysis(fallback_text, 25)
-    
-    return {
-        "success": True,
-        "analysis": formatted_analysis,
-        "raw_analysis": fallback_text,
-        "plant_name": "Неопознанное растение",
-        "confidence": 25,
-        "source": "fallback_improved",
-        "needs_retry": True
-    }
-
-@dp.message(Command("notifications"))
-async def notifications_command(message: types.Message):
-    """Команда /notifications - быстрый доступ к настройкам уведомлений"""
-    # Вызываем тот же обработчик что и кнопка
-    callback_query = types.CallbackQuery(
-        id="cmd_notifications",
-        from_user=message.from_user,
-        chat_instance="",
-        message=message,
-        data="notification_settings"
-    )
-    await notification_settings_callback(callback_query)
-
-@dp.message(Command("plants"))
-async def plants_command(message: types.Message):
-    """Команда /plants - быстрый доступ к коллекции"""
-    callback_query = types.CallbackQuery(
-        id="cmd_plants",
-        from_user=message.from_user,
-        chat_instance="",
-        message=message,
-        data="my_plants"
-    )
-    await my_plants_callback(callback_query)
-
-@dp.message(Command("add"))
-async def add_command(message: types.Message):
-    """Команда /add - быстрый доступ к добавлению растения"""
-    await message.answer(
-        "🌱 <b>Добавьте растение в коллекцию</b>\n\n"
-        "📸 <b>Пришлите фото вашего растения:</b>\n"
-        "• Я определю вид и состояние растения\n"
-        "• Дам персональные рекомендации по уходу\n"
-        "• Автоматически добавлю в вашу коллекцию\n"
-        "• Настрою индивидуальные напоминания о поливе\n\n"
-        "💡 <b>Советы для лучшего результата:</b>\n"
-        "• Фотографируйте при дневном свете\n"
-        "• Покажите листья и общий вид растения\n" 
-        "• Избегайте размытых и тёмных снимков\n"
-        "• Можете добавить вопрос в описании к фото",
-        parse_mode="HTML"
-    )
-
-@dp.message(Command("analyze"))
-async def analyze_command(message: types.Message):
-    """Команда /analyze - быстрый доступ к анализу"""
-    await message.answer(
-        "📸 <b>Отправьте фото растения для анализа</b>\n\n"
-        "💡 <b>Советы для лучшего результата:</b>\n"
-        "• Фотографируйте при дневном свете\n"
-        "• Покажите листья и общий вид растения\n" 
-        "• Избегайте размытых и тёмных снимков\n"
-        "• Можете добавить вопрос в описании к фото",
-        parse_mode="HTML"
-    )
-
-@dp.message(Command("question"))
-async def question_command(message: types.Message, state: FSMContext):
-    """Команда /question - быстрый доступ к вопросам"""
-    await message.answer(
-        "❓ <b>Задайте ваш вопрос о растениях</b>\n\n"
-        "💡 <b>Я могу помочь с:</b>\n"
-        "• Проблемами с листьями (желтеют, сохнут, опадают)\n"
-        "• Режимом полива и подкормки\n" 
-        "• Пересадкой и размножением\n"
-        "• Болезнями и вредителями\n"
-        "• Выбором места для растения\n"
-        "• Любыми другими вопросами по уходу",
-        parse_mode="HTML"
-    )
-    await state.set_state(PlantStates.waiting_question)
-
-@dp.message(Command("stats"))
-async def stats_command(message: types.Message):
-    """Команда /stats - быстрый доступ к статистике"""
-    callback_query = types.CallbackQuery(
-        id="cmd_stats",
-        from_user=message.from_user,
-        chat_instance="",
-        message=message,
-        data="stats"
-    )
-    await stats_callback(callback_query)
-
-# Обработчики команд
-@dp.message(Command("start"))
-async def start_command(message: types.Message):
-    """Команда /start"""
-    user_id = message.from_user.id
-    
-    try:
-        db = await get_db()
-        await db.add_user(
-            user_id=user_id,
-            username=message.from_user.username,
-            first_name=message.from_user.first_name
-        )
-    except Exception as e:
-        print(f"Ошибка добавления пользователя: {e}")
-    
-    await message.answer(
-        f"🌱 Привет, {message.from_user.first_name}!\n\n"
-        "Я умный помощник по уходу за растениями:\n"
-        "🌱 Простое добавление растений в коллекцию\n"
-        "📸 Точное распознавание видов растений\n"
-        "💡 Персонализированные рекомендации по уходу\n"
-        "❓ Ответы на вопросы о растениях\n"
-        "⏰ Умные напоминания о поливе для каждого растения\n"
-        "🔔 Гибкие настройки уведомлений\n\n"
-        "Начните с кнопки <b>\"🌱 Добавить растение\"</b>!",
-        parse_mode="HTML",
-        reply_markup=main_menu()
-    )
-
-@dp.message(Command("help"))
-async def help_command(message: types.Message):
-    """Команда /help"""
-    help_text = """
-🌱 <b>Как пользоваться ботом:</b>
-
-🌱 <b>Добавление растения в коллекцию:</b>
-• Нажми "🌱 Добавить растение" в главном меню
-• Или используй команду /add
-• Пришли фото растения для анализа и автоматического добавления
-• Получи персональные рекомендации и настройки напоминаний
-
-📸 <b>Анализ растения (без сохранения):</b>
-• Пришли фото растения или используй /analyze
-• Получи полный анализ и рекомендации
-• Можешь сохранить результат в коллекцию
-
-⏰ <b>Умные напоминания:</b>
-• Ежедневная проверка растений в 9:00 утра (МСК)
-• Персональный график для каждого растения
-• Быстрая отметка полива из уведомления
-
-🔔 <b>Настройки уведомлений:</b>
-• Глобальное включение/выключение всех уведомлений
-• Индивидуальные настройки для каждого растения
-• Массовое управление уведомлениями коллекции
-
-❓ <b>Вопросы о растениях:</b>
-• Просто напиши вопрос в чат
-• Или используй команду /question
-• Получи экспертный совет
-
-🌿 <b>Мои растения:</b>
-• Команда /plants - просмотр коллекции
-• Отмечай полив и уход
-• Настраивай персональные интервалы
-• Полные карточки растений с историей
-
-📊 <b>Статистика:</b>
-• Команда /stats - подробная статистика
-• Отслеживай прогресс ухода
-
-<b>Для лучшего результата:</b>
-• Фотографируй при хорошем освещении
-• Покажи листья крупным планом
-• Включи в кадр всё растение целиком
-
-<b>Доступные команды в меню:</b>
-/start - главное меню
-/add - добавить растение  
-/analyze - анализ растения
-/question - задать вопрос
-/plants - мои растения  
-/notifications - настройки уведомлений
-/stats - статистика
-/help - эта справка
-
-💡 <b>Быстрый доступ через меню команд!</b>
-    """
-    await message.answer(help_text, parse_mode="HTML", reply_markup=main_menu())
-
-@dp.message(StateFilter(PlantStates.editing_plant_name))
-async def handle_plant_rename(message: types.Message, state: FSMContext):
-    """Обработка нового названия растения"""
-    try:
-        new_name = message.text.strip()
-        
-        # Валидация названия
-        if len(new_name) < 2:
-            await message.reply(
-                "❌ <b>Название слишком короткое</b>\n"
-                "Минимум 2 символа. Попробуйте еще раз:",
-                parse_mode="HTML"
-            )
-            return
-        
-        if len(new_name) > 50:
-            await message.reply(
-                "❌ <b>Название слишком длинное</b>\n"
-                "Максимум 50 символов. Попробуйте еще раз:",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Проверка на недопустимые символы
-        if any(char in new_name for char in ['<', '>', '"', "'"]):
-            await message.reply(
-                "❌ <b>Недопустимые символы</b>\n"
-                "Название не может содержать < > \" '\n"
-                "Попробуйте еще раз:",
-                parse_mode="HTML"
-            )
-            return
-        
-        # Получаем ID растения из состояния
-        data = await state.get_data()
-        plant_id = data.get('editing_plant_id')
-        
-        if not plant_id:
-            await message.reply("❌ Ошибка: ID растения не найден")
-            await state.clear()
-            return
-        
-        user_id = message.from_user.id
-        
-        # Обновляем название в БД
-        db = await get_db()
-        await db.update_plant_name(plant_id, user_id, new_name)
-        
-        success_keyboard = [
-            [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
-            [InlineKeyboardButton(text="🌿 К коллекции", callback_data="my_plants")],
-            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-        ]
-        
-        await message.reply(
-            f"✅ <b>Название успешно изменено!</b>\n\n"
-            f"🌱 Новое название: <b>{new_name}</b>\n\n"
-            f"Растение обновлено в вашей коллекции.",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=success_keyboard)
-        )
-        
-        await state.clear()
-        
-    except Exception as e:
-        print(f"Ошибка переименования: {e}")
-        await message.reply("❌ Ошибка сохранения названия.")
-        await state.clear()
-
-# Обработка всех текстовых сообщений (кроме команд и состояний)
-@dp.message(F.text, ~StateFilter(PlantStates.waiting_question, PlantStates.editing_plant_name))
-async def handle_text_message(message: types.Message):
-    """Обработка произвольных текстовых сообщений"""
-    try:
-        text = message.text.strip()
-        
-        # Пропускаем команды
-        if text.startswith('/'):
-            return
-        
-        # Проверяем, связан ли текст с растениями и безопасен ли он
-        is_safe_plant_topic, reason = is_plant_related_and_safe(text)
-        
-        if reason == "illegal":
-            await message.reply(
-                "⚠️ Извините, я не могу предоставить информацию о таких растениях.\n\n"
-                "🌱 Я помогаю только с комнатными, садовыми и декоративными растениями!\n"
-                "📸 Пришлите фото своего домашнего растения для анализа.",
-                reply_markup=main_menu()
-            )
-            return
-        
-        if not is_safe_plant_topic:
-            await message.reply(
-                "🌱 Я специализируюсь только на вопросах о растениях!\n\n"
-                "💡 <b>Могу помочь с:</b>\n"
-                "• Уходом за комнатными растениями\n"
-                "• Проблемами с листьями и цветением\n"
-                "• Поливом и подкормкой\n"
-                "• Болезнями и вредителями\n"
-                "• Пересадкой и размножением\n\n"
-                "📸 Или пришлите фото растения для анализа!",
-                parse_mode="HTML",
-                reply_markup=main_menu()
-            )
-            return
-        
-        # Обрабатываем вопрос о растениях
-        processing_msg = await message.reply("🌿 <b>Консультируюсь по вашему вопросу...</b>", parse_mode="HTML")
-        
-        user_id = message.from_user.id
-        user_context = ""
-        
-        # Добавляем контекст из последнего анализа если есть
-        if user_id in temp_analyses:
-            plant_info = temp_analyses[user_id]
-            plant_name = plant_info.get("plant_name", "растение")
-            user_context = f"\n\nКонтекст: Пользователь недавно анализировал {plant_name}. Учтите это в ответе если релевантно."
-        
-        answer = None
-        
-        # Получаем ответ через OpenAI
-        if openai_client:
-            try:
-                enhanced_prompt = f"""
-Вы - эксперт-ботаник с 30-летним опытом работы с комнатными и садовыми растениями.
-
-ВАЖНО: Отвечайте ТОЛЬКО на вопросы о растениях (комнатных, садовых, декоративных, плодовых, овощных).
-НЕ отвечайте на вопросы о наркотических, психоактивных или нелегальных растениях.
-
-Структура ответа:
-1. 🔍 Краткий анализ проблемы/вопроса
-2. 💡 Подробные рекомендации и решения  
-3. ⚠️ Что нужно избегать
-4. 📋 Пошаговый план действий (если применимо)
-5. 🌟 Дополнительные советы
-
-Форматирование:
-- Используйте эмодзи для структурирования
-- НЕ используйте ** для выделения текста
-- Будьте конкретными и практичными
-- Отвечайте на русском языке
-{user_context}
-
-Вопрос пользователя: {text}
+        [InlineKeyboardButton(text="❓ Вопрос пользователя: {text}
                 """
                 
                 response = await openai_client.chat.completions.create(
@@ -1319,109 +744,8 @@ async def handle_text_message(message: types.Message):
             reply_markup=main_menu()
         )
 
-@dp.message(StateFilter(PlantStates.waiting_question))
-async def handle_question(message: types.Message, state: FSMContext):
-    """Обработка текстовых вопросов с улучшенным контекстом"""
-    try:
-        processing_msg = await message.reply("🤔 <b>Консультируюсь с экспертом...</b>", parse_mode="HTML")
-        
-        user_id = message.from_user.id
-        user_context = ""
-        
-        # Добавляем контекст из последнего анализа если есть
-        if user_id in temp_analyses:
-            plant_info = temp_analyses[user_id]
-            plant_name = plant_info.get("plant_name", "растение")
-            user_context = f"\n\nКонтекст: Пользователь недавно анализировал {plant_name}. Учтите это в ответе."
-        
-        answer = None
-        
-        # Улучшенный промпт для OpenAI
-        if openai_client:
-            try:
-                enhanced_prompt = f"""
-Вы - ведущий эксперт по комнатным и садовым растениям с 30-летним опытом.
-Ответьте подробно и практично на вопрос пользователя о растениях.
+# === ОБРАБОТКА ФОТО ===
 
-Структура ответа:
-1. Краткий диагноз/ответ на вопрос
-2. Подробные рекомендации по решению
-3. Дополнительные советы по профилактике
-4. При необходимости - когда обращаться к специалисту
-
-Форматирование:
-- Используйте эмодзи для наглядности
-- НЕ используйте ** для выделения текста  
-- Давайте конкретные, применимые советы
-{user_context}
-
-Вопрос: {message.text}
-                """
-                
-                response = await openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Вы - профессиональный ботаник и консультант по растениям. Отвечайте экспертно, но доступным языком на русском."
-                        },
-                        {
-                            "role": "user",
-                            "content": enhanced_prompt
-                        }
-                    ],
-                    max_tokens=1000,
-                    temperature=0.3
-                )
-                answer = response.choices[0].message.content
-            except Exception as e:
-                print(f"OpenAI question error: {e}")
-        
-        await processing_msg.delete()
-        
-        if answer and len(answer) > 50:
-            # Применяем правильное форматирование
-            answer = format_openai_response(answer)
-            
-            # Улучшаем форматирование ответа
-            if not answer.startswith(('🌿', '💡', '🔍', '⚠️', '✅')):
-                answer = f"🌿 <b>Экспертный ответ:</b>\n\n{answer}"
-            
-            await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
-        else:
-            # Улучшенный fallback
-            fallback_answer = f"""
-🤔 <b>По вашему вопросу:</b> "{message.text}"
-
-К сожалению, сейчас не могу дать полный экспертный ответ. 
-
-💡 <b>Рекомендую:</b>
-• Сфотографируйте растение для точной диагностики
-• Опишите симптомы более подробно
-• Обратитесь в ботанический сад или садовый центр
-• Попробуйте переформулировать вопрос
-
-🌱 <b>Общие советы:</b>
-• Проверьте освещение и полив
-• Осмотрите листья на предмет вредителей  
-• Убедитесь в подходящей влажности воздуха
-
-Попробуйте задать вопрос позже или пришлите фото для анализа!
-            """
-            
-            await message.reply(fallback_answer, parse_mode="HTML", reply_markup=main_menu())
-        
-        await state.clear()
-        
-    except Exception as e:
-        print(f"Ошибка ответа на вопрос: {e}")
-        await message.reply(
-            "❌ Произошла ошибка при обработке вопроса.\n"
-            "🔄 Попробуйте переформулировать или задать вопрос позже.", 
-            reply_markup=main_menu()
-        )
-        await state.clear()
-# Улучшенная обработка фотографий
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     """Обработка фотографий растений с улучшенным анализом"""
@@ -1515,7 +839,8 @@ async def handle_photo(message: types.Message):
             reply_markup=main_menu()
         )
 
-# Callback обработчики
+# === CALLBACK ОБРАБОТЧИКИ ===
+
 @dp.callback_query(F.data == "add_plant")
 async def add_plant_callback(callback: types.CallbackQuery):
     await callback.message.answer(
@@ -1529,8 +854,34 @@ async def add_plant_callback(callback: types.CallbackQuery):
         "• Фотографируйте при дневном свете\n"
         "• Покажите листья и общий вид растения\n" 
         "• Избегайте размытых и тёмных снимков\n"
-        "• Можете добавить вопрос в описании к фото",
+        "• Можете добавить вопрос в описании к фото\n\n"
+        "🌿 <b>Хотите вырастить растение с нуля?</b>\n"
+        "Напишите в чат название растения, которое хотите вырастить!",
         parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "grow_from_scratch")
+async def grow_from_scratch_callback(callback: types.CallbackQuery, state: FSMContext):
+    keyboard = [
+        [InlineKeyboardButton(text="🌱 Из семян", callback_data="grow_seeds")],
+        [InlineKeyboardButton(text="🌿 Из черенка", callback_data="grow_cutting")],
+        [InlineKeyboardButton(text="🌷 Из луковицы", callback_data="grow_bulb")],
+        [InlineKeyboardButton(text="📝 Свой вариант", callback_data="grow_custom")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ]
+    
+    await callback.message.answer(
+        "🌿 <b>Выращиваем растение с нуля!</b>\n\n"
+        "Я стану вашим персональным наставником и буду помогать "
+        "на каждом этапе - от посадки до взрослого растения!\n\n"
+        "🎯 <b>Выберите способ выращивания:</b>\n\n"
+        "🌱 <b>Из семян</b> - базилик, петрушка, цветы\n"
+        "🌿 <b>Из черенка</b> - фикус, герань, суккуленты\n" 
+        "🌷 <b>Из луковицы</b> - тюльпаны, гиацинты, лилии\n"
+        "📝 <b>Свой вариант</b> - опишите что хотите вырастить",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
     await callback.answer()
 
@@ -2597,82 +1948,8 @@ async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
     
     await callback.answer()
 
-# Функция для обработки форматирования ответов OpenAI
-def format_openai_response(text: str) -> str:
-    """Конвертирует Markdown форматирование в HTML для Telegram"""
-    if not text:
-        return text
-    
-    # Заменяем **текст** на <b>текст</b>
-    import re
-    
-    # Обрабатываем жирный текст
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
-    
-    # Обрабатываем курсив *текст* на <i>текст</i> 
-    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
-    
-    # Убираем лишние пробелы и переносы
-    text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)  # Максимум 2 переноса подряд
-    
-    return text.strip()
+# === WEBAPP И ОСНОВНАЯ ФУНКЦИЯ ===
 
-# Проверка на растительную тематику и безопасность
-def is_plant_related_and_safe(text: str) -> tuple[bool, str]:
-    """Проверяет, связан ли вопрос с растениями и безопасен ли он"""
-    text_lower = text.lower()
-    
-    # Запрещенные темы (наркотические и нелегальные растения)
-    forbidden_keywords = [
-        'марихуана', 'каннабис', 'конопля', 'гашиш', 'травка', 'план', 'дурь',
-        'кока', 'кокаин', 'мак', 'опиум', 'героин', 'псилоцибин', 'грибы галлюциногенные',
-        'дурман', 'белена', 'красавка', 'аяуаска', 'салвия дивинорум',
-        'наркотик', 'наркотический', 'психоактивн', 'галлюциноген', 'опьянен'
-    ]
-    
-    # Проверяем на запрещенные темы
-    for keyword in forbidden_keywords:
-        if keyword in text_lower:
-            return False, "illegal"
-    
-    # Ключевые слова растительной тематики
-    plant_keywords = [
-        'растение', 'цветок', 'дерево', 'куст', 'трава', 'листья', 'лист', 'корни', 'корень',
-        'стебель', 'ствол', 'ветки', 'ветка', 'плод', 'фрукт', 'овощ', 'ягода', 'семена', 'семя',
-        'полив', 'поливать', 'удобрение', 'подкормка', 'пересадка', 'почва', 'грунт', 'земля',
-        'горшок', 'кашпо', 'освещение', 'свет', 'солнце', 'тень', 'влажность', 'температура',
-        'болезнь', 'вредитель', 'желтеют', 'сохнут', 'вянут', 'опадают', 'гниют',
-        'фикус', 'роза', 'орхидея', 'кактус', 'суккулент', 'фиалка', 'герань', 'драцена',
-        'спатифиллум', 'монстера', 'филодендрон', 'алоэ', 'хлорофитум', 'пальма', 'папоротник',
-        'бегония', 'петуния', 'тюльпан', 'нарцисс', 'лилия', 'ромашка', 'подсолнух',
-        'томат', 'огурец', 'перец', 'баклажан', 'капуста', 'морковь', 'лук', 'чеснок',
-        'яблоня', 'груша', 'вишня', 'слива', 'виноград', 'малина', 'клубника', 'смородина',
-        'комнатный', 'домашний', 'садовый', 'огородный', 'декоративный', 'плодовый',
-        'цветение', 'цветет', 'бутон', 'соцветие', 'лепесток', 'тычинка', 'пестик',
-        'фотосинтез', 'хлорофилл', 'прививка', 'черенок', 'размножение', 'посадка', 'выращивание'
-    ]
-    
-    # Проверяем наличие растительных ключевых слов
-    for keyword in plant_keywords:
-        if keyword in text_lower:
-            return True, "plant_related"
-    
-    # Дополнительная проверка на вопросительные конструкции о растениях
-    question_patterns = [
-        'как ухаживать', 'как поливать', 'как выращивать', 'как сажать', 'как пересадить',
-        'почему желтеют', 'почему сохнут', 'почему не растет', 'почему не цветет',
-        'что с растением', 'что делать если', 'можно ли', 'нужно ли'
-    ]
-    
-    for pattern in question_patterns:
-        if pattern in text_lower:
-            return True, "plant_question"
-    
-    return False, "not_plant_related"
-
-# [Остальные обработчики текстовых сообщений остаются без изменений...]
-
-# Webhook setup и остальной код
 async def on_startup():
     """Инициализация при запуске"""
     await init_database()
@@ -2681,6 +1958,7 @@ async def on_startup():
     commands = [
         types.BotCommand(command="start", description="🌱 Начать работу"),
         types.BotCommand(command="add", description="🌱 Добавить растение"),
+        types.BotCommand(command="grow", description="🌿 Вырастить с нуля"),
         types.BotCommand(command="analyze", description="📸 Анализ растения"),
         types.BotCommand(command="question", description="❓ Задать вопрос"),
         types.BotCommand(command="plants", description="🌿 Мои растения"),
@@ -2753,10 +2031,20 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI Plant Care Assistant", 
-        "version": "2.6",
-        "features": ["plant_identification", "health_assessment", "care_recommendations", "smart_reminders", "notification_management", "easy_plant_adding", "bot_commands"],
+        "version": "3.0",
+        "features": [
+            "plant_identification", 
+            "health_assessment", 
+            "care_recommendations", 
+            "smart_reminders", 
+            "notification_management", 
+            "easy_plant_adding", 
+            "bot_commands",
+            "grow_from_scratch"  # Новая функция!
+        ],
         "reminder_schedule": "daily_at_09:00_MSK_UTC+3",
-        "commands": ["start", "add", "analyze", "question", "plants", "notifications", "stats", "help"]
+        "commands": ["start", "add", "grow", "analyze", "question", "plants", "notifications", "stats", "help"],
+        "growth_methods": ["seeds", "cutting", "bulb", "custom"]
     })
 
 async def main():
@@ -2776,8 +2064,9 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
         
-        print(f"🚀 Bloom AI Plant Bot запущен на порту {PORT}")
+        print(f"🚀 Bloom AI Plant Bot v3.0 запущен на порту {PORT}")
         print(f"🌱 Готов к точному распознаванию растений!")
+        print(f"🌿 Новая функция: выращивание с нуля!")
         print(f"⏰ Умные напоминания активны (МСК UTC+3)!")
         print(f"🔔 Система управления уведомлениями готова!")
         print(f"📋 Все команды бота настроены и доступны!")
@@ -2792,6 +2081,7 @@ async def main():
     else:
         print("🤖 Бот запущен в режиме polling")
         print("🌱 Готов к точному распознаванию растений!")
+        print("🌿 Новая функция: выращивание с нуля!")
         print("⏰ Умные напоминания активны (МСК UTC+3)!")
         print("🔔 Система управления уведомлениями готова!")
         print("📋 Все команды бота настроены и доступны!")
@@ -2808,4 +2098,1062 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Критическая ошибка: {e}")
     except KeyboardInterrupt:
-        print("🛑 Принудительная остановка")
+        print("🛑 Принудительная остановка")рос о растении", callback_data="ask_about")],
+        [InlineKeyboardButton(text="🔄 Повторный анализ", callback_data="reanalyze")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+# === ФУНКЦИИ АНАЛИЗА ===
+
+def extract_personal_watering_info(analysis_text: str) -> dict:
+    """Извлекает персональную информацию о поливе из анализа"""
+    watering_info = {
+        "interval_days": 5,  # по умолчанию
+        "personal_recommendations": "",
+        "current_state": "",
+        "needs_adjustment": False
+    }
+    
+    if not analysis_text:
+        return watering_info
+    
+    lines = analysis_text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        
+        # Извлекаем персональный интервал
+        if line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
+            interval_text = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
+            # Ищем числа в тексте
+            import re
+            numbers = re.findall(r'\d+', interval_text)
+            if numbers:
+                try:
+                    interval = int(numbers[0])
+                    # Ограничиваем разумными пределами
+                    if 1 <= interval <= 15:
+                        watering_info["interval_days"] = interval
+                except:
+                    pass
+        
+        # Извлекаем анализ текущего состояния
+        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
+            current_state = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
+            watering_info["current_state"] = current_state
+            # Проверяем, нужна ли корректировка
+            if any(word in current_state.lower() for word in ["переувлажн", "перелив", "недополит", "пересушен", "проблем"]):
+                watering_info["needs_adjustment"] = True
+        
+        # Извлекаем персональные рекомендации
+        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
+            recommendations = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
+            watering_info["personal_recommendations"] = recommendations
+            
+    return watering_info
+
+def format_plant_analysis(raw_text: str, confidence: float = None) -> str:
+    """Форматирование детального анализа растения"""
+    
+    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
+    formatted = ""
+    
+    # Парсим структурированный ответ
+    plant_name = "Неизвестное растение"
+    confidence_level = confidence or 0
+    
+    for line in lines:
+        if line.startswith("РАСТЕНИЕ:"):
+            plant_name = line.replace("РАСТЕНИЕ:", "").strip()
+            # Убираем лишнюю информацию в скобках для заголовка
+            display_name = plant_name.split("(")[0].strip()
+            formatted += f"🌿 <b>{display_name}</b>\n"
+            if "(" in plant_name:
+                latin_name = plant_name[plant_name.find("(")+1:plant_name.find(")")]
+                formatted += f"🏷️ <i>{latin_name}</i>\n"
+            
+        elif line.startswith("УВЕРЕННОСТЬ:"):
+            conf = line.replace("УВЕРЕННОСТЬ:", "").strip()
+            try:
+                confidence_level = float(conf.replace("%", ""))
+                if confidence_level >= 80:
+                    conf_icon = "🎯"
+                elif confidence_level >= 60:
+                    conf_icon = "🎪"
+                else:
+                    conf_icon = "🤔"
+                formatted += f"{conf_icon} <b>Уверенность:</b> {conf}\n\n"
+            except:
+                formatted += f"🎪 <b>Уверенность:</b> {conf}\n\n"
+                
+        elif line.startswith("ПРИЗНАКИ:"):
+            signs = line.replace("ПРИЗНАКИ:", "").strip()
+            formatted += f"🔍 <b>Признаки:</b> {signs}\n"
+            
+        elif line.startswith("СЕМЕЙСТВО:"):
+            family = line.replace("СЕМЕЙСТВО:", "").strip()
+            formatted += f"👨‍👩‍👧‍👦 <b>Семейство:</b> {family}\n"
+            
+        elif line.startswith("РОДИНА:"):
+            origin = line.replace("РОДИНА:", "").strip()
+            formatted += f"🌍 <b>Родина:</b> {origin}\n\n"
+            
+        elif line.startswith("СОСТОЯНИЕ:"):
+            condition = line.replace("СОСТОЯНИЕ:", "").strip()
+            if any(word in condition.lower() for word in ["здоров", "хорош", "отличн", "норм"]):
+                icon = "✅"
+            elif any(word in condition.lower() for word in ["проблем", "болен", "плох", "стресс"]):
+                icon = "⚠️"
+            else:
+                icon = "ℹ️"
+            formatted += f"{icon} <b>Состояние:</b> {condition}\n"
+            
+        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
+            watering_analysis = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
+            if any(word in watering_analysis.lower() for word in ["переувлажн", "перелив"]):
+                icon = "🔴"
+            elif any(word in watering_analysis.lower() for word in ["недополит", "пересушен"]):
+                icon = "🟡"
+            else:
+                icon = "🟢"
+            formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
+            
+        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
+            watering_rec = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
+            formatted += f"💧 <b>Персональные рекомендации по поливу:</b> {watering_rec}\n"
+            
+        elif line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
+            interval = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
+            formatted += f"⏰ <b>Рекомендуемый интервал:</b> {interval} дней\n\n"
+            
+        elif line.startswith("СВЕТ:"):
+            light = line.replace("СВЕТ:", "").strip()
+            formatted += f"☀️ <b>Освещение:</b> {light}\n"
+            
+        elif line.startswith("ТЕМПЕРАТУРА:"):
+            temp = line.replace("ТЕМПЕРАТУРА:", "").strip()
+            formatted += f"🌡️ <b>Температура:</b> {temp}\n"
+            
+        elif line.startswith("ВЛАЖНОСТЬ:"):
+            humidity = line.replace("ВЛАЖНОСТЬ:", "").strip()
+            formatted += f"💨 <b>Влажность:</b> {humidity}\n"
+            
+        elif line.startswith("ПОДКОРМКА:"):
+            feeding = line.replace("ПОДКОРМКА:", "").strip()
+            formatted += f"🍽️ <b>Подкормка:</b> {feeding}\n"
+            
+        elif line.startswith("ПЕРЕСАДКА:"):
+            repot = line.replace("ПЕРЕСАДКА:", "").strip()
+            formatted += f"🪴 <b>Пересадка:</b> {repot}\n"
+            
+        elif line.startswith("ПРОБЛЕМЫ:"):
+            problems = line.replace("ПРОБЛЕМЫ:", "").strip()
+            formatted += f"\n⚠️ <b>Возможные проблемы:</b> {problems}\n"
+            
+        elif line.startswith("СОВЕТ:"):
+            advice = line.replace("СОВЕТ:", "").strip()
+            formatted += f"\n💡 <b>Персональный совет:</b> {advice}"
+    
+    # Добавляем индикатор качества распознавания
+    if confidence_level >= 80:
+        formatted += "\n\n🏆 <i>Высокая точность распознавания</i>"
+    elif confidence_level >= 60:
+        formatted += "\n\n👍 <i>Хорошее распознавание</i>"
+    else:
+        formatted += "\n\n🤔 <i>Требуется дополнительная идентификация</i>"
+    
+    formatted += "\n💾 <i>Сохраните для персональных напоминаний!</i>"
+    
+    return formatted
+
+async def optimize_image_for_analysis(image_data: bytes, high_quality: bool = True) -> bytes:
+    """Оптимизация изображения для анализа"""
+    try:
+        image = Image.open(BytesIO(image_data))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Для анализа используем более высокое качество
+        if high_quality:
+            # Увеличиваем размер для лучшего анализа
+            if max(image.size) < 1024:
+                # Увеличиваем маленькие изображения
+                ratio = 1024 / max(image.size)
+                new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+            elif max(image.size) > 2048:
+                # Уменьшаем очень большие
+                image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+        else:
+            # Стандартная оптимизация
+            if max(image.size) > 1024:
+                image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        
+        output = BytesIO()
+        # Повышенное качество для анализа
+        quality = 95 if high_quality else 85
+        image.save(output, format='JPEG', quality=quality, optimize=True)
+        return output.getvalue()
+    except Exception as e:
+        print(f"Ошибка оптимизации изображения: {e}")
+        return image_data
+
+async def analyze_with_openai_advanced(image_data: bytes, user_question: str = None) -> dict:
+    """Продвинутый анализ через OpenAI GPT-4 Vision"""
+    if not openai_client:
+        return {"success": False, "error": "OpenAI API недоступен"}
+    
+    try:
+        optimized_image = await optimize_image_for_analysis(image_data, high_quality=True)
+        base64_image = base64.b64encode(optimized_image).decode('utf-8')
+        
+        prompt = PLANT_IDENTIFICATION_PROMPT
+        
+        if user_question:
+            prompt += f"\n\nДополнительно ответьте на вопрос пользователя: {user_question}"
+        
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o",  # Используем последнюю модель
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Вы - ведущий эксперт-ботаник с 30-летним опытом идентификации комнатных и садовых растений. Вы способны точно определять виды растений по фотографиям и давать профессиональные рекомендации по уходу."
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
+                                "detail": "high"  # Высокое качество анализа
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=1200,
+            temperature=0.1  # Низкая температура для более точных ответов
+        )
+        
+        raw_analysis = response.choices[0].message.content
+        
+        # Проверяем качество ответа
+        if len(raw_analysis) < 100 or "не могу" in raw_analysis.lower() or "sorry" in raw_analysis.lower():
+            raise Exception("Некачественный ответ от OpenAI")
+        
+        # Извлекаем уверенность из ответа
+        confidence = 0
+        for line in raw_analysis.split('\n'):
+            if line.startswith("УВЕРЕННОСТЬ:"):
+                try:
+                    conf_str = line.replace("УВЕРЕННОСТЬ:", "").strip().replace("%", "")
+                    confidence = float(conf_str)
+                except:
+                    confidence = 70  # По умолчанию
+                break
+        
+        # Извлекаем название растения
+        plant_name = "Неизвестное растение"
+        for line in raw_analysis.split('\n'):
+            if line.startswith("РАСТЕНИЕ:"):
+                plant_name = line.replace("РАСТЕНИЕ:", "").strip()
+                break
+        
+        formatted_analysis = format_plant_analysis(raw_analysis, confidence)
+        
+        return {
+            "success": True,
+            "analysis": formatted_analysis,
+            "raw_analysis": raw_analysis,
+            "plant_name": plant_name,
+            "confidence": confidence,
+            "source": "openai_advanced"
+        }
+        
+    except Exception as e:
+        print(f"OpenAI Advanced API error: {e}")
+        return {"success": False, "error": str(e)}
+
+async def analyze_with_plantid_advanced(image_data: bytes) -> dict:
+    """Продвинутый анализ через Plant.id API"""
+    if not PLANTID_API_KEY:
+        return {"success": False, "error": "Plant.id API недоступен"}
+    
+    try:
+        import httpx
+        
+        optimized_image = await optimize_image_for_analysis(image_data, high_quality=True)
+        base64_image = base64.b64encode(optimized_image).decode('utf-8')
+        
+        # Более детальный запрос к Plant.id
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.post(
+                "https://api.plant.id/v2/identify",
+                json={
+                    "images": [f"data:image/jpeg;base64,{base64_image}"],
+                    "modifiers": [
+                        "crops_fast", 
+                        "similar_images", 
+                        "health_assessment",
+                        "disease_similar_images"
+                    ],
+                    "plant_language": "ru",
+                    "plant_net": "auto",
+                    "plant_details": [
+                        "common_names",
+                        "url", 
+                        "description",
+                        "taxonomy",
+                        "rank",
+                        "gbif_id",
+                        "inaturalist_id",
+                        "image",
+                        "synonyms",
+                        "edible_parts",
+                        "watering",
+                        "propagation_methods"
+                    ]
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "Api-Key": PLANTID_API_KEY
+                }
+            )
+        
+        if response.status_code != 200:
+            return {"success": False, "error": f"Plant.id API error: {response.status_code}"}
+        
+        data = response.json()
+        
+        if not data.get("suggestions") or len(data["suggestions"]) == 0:
+            return {"success": False, "error": "Растение не распознано"}
+        
+        # Берем лучший результат
+        suggestion = data["suggestions"][0]
+        plant_details = suggestion.get("plant_details", {})
+        
+        # Формируем детальный анализ
+        plant_name = suggestion.get("plant_name", "Неизвестное растение")
+        probability = suggestion.get("probability", 0) * 100
+        
+        # Получаем общие названия
+        common_names = plant_details.get("common_names", {})
+        russian_names = common_names.get("ru", [])
+        if russian_names:
+            display_name = russian_names[0]
+        else:
+            display_name = plant_name
+        
+        # Таксономия
+        taxonomy = plant_details.get("taxonomy", {})
+        family = taxonomy.get("family", "")
+        
+        # Оценка здоровья
+        health_info = "Требуется визуальная оценка"
+        if data.get("health_assessment"):
+            health = data["health_assessment"]
+            if health.get("is_healthy"):
+                health_prob = health["is_healthy"]["probability"]
+                if health_prob > 0.8:
+                    health_info = f"Растение выглядит здоровым ({health_prob*100:.0f}% уверенности)"
+                elif health_prob > 0.5:
+                    health_info = f"Возможны незначительные проблемы ({health_prob*100:.0f}% здоровья)"
+                else:
+                    health_info = f"Обнаружены проблемы со здоровьем ({health_prob*100:.0f}% здоровья)"
+                    
+                # Проверяем болезни
+                if health.get("diseases"):
+                    diseases = health["diseases"]
+                    if diseases:
+                        top_disease = diseases[0]
+                        disease_name = top_disease.get("name", "неизвестная проблема")
+                        disease_prob = top_disease.get("probability", 0) * 100
+                        if disease_prob > 30:
+                            health_info += f". Возможна проблема: {disease_name} ({disease_prob:.0f}%)"
+        
+        # Формируем специализированные рекомендации на основе Plant.id данных
+        watering_info = plant_details.get("watering", {})
+        personal_watering_rec = "Следуйте персональному режиму полива для этого экземпляра"
+        watering_analysis = "Состояние полива требует визуальной оценки"
+        
+        # Пытаемся определить интервал на основе типа растения
+        if "succulent" in plant_name.lower() or "cactus" in plant_name.lower():
+            watering_interval = 10
+            personal_watering_rec = "Как суккулент, поливайте редко но обильно, когда почва полностью высохнет"
+        elif any(word in display_name.lower() for word in ["папоротник", "спатифиллум", "фиалка"]):
+            watering_interval = 3
+            personal_watering_rec = "Как влаголюбивое растение, поддерживайте постоянную умеренную влажность почвы"
+        else:
+            watering_interval = 5
+            personal_watering_rec = "Поливайте когда верхний слой почвы подсохнет на 2-3 см"
+        
+        # Создаем детальный анализ
+        analysis_text = f"""
+РАСТЕНИЕ: {display_name} ({plant_name})
+УВЕРЕННОСТЬ: {probability:.0f}%
+ПРИЗНАКИ: Идентифицировано по форме листьев, характеру роста и морфологическим особенностям
+СЕМЕЙСТВО: {family if family else 'Не определено'}
+РОДИНА: {plant_details.get('description', {}).get('value', 'Информация недоступна')[:100] + '...' if plant_details.get('description', {}).get('value') else 'Не определено'}
+
+СОСТОЯНИЕ: {health_info}
+ПОЛИВ_АНАЛИЗ: {watering_analysis}
+ПОЛИВ_РЕКОМЕНДАЦИИ: {personal_watering_rec}
+ПОЛИВ_ИНТЕРВАЛ: {watering_interval}
+СВЕТ: Подберите освещение согласно требованиям данного вида
+ТЕМПЕРАТУРА: 18-24°C (уточните для конкретного вида)
+ВЛАЖНОСТЬ: Умеренная влажность воздуха 40-60%
+ПОДКОРМКА: В период роста каждые 2-4 недели комплексным удобрением
+ПЕРЕСАДКА: Молодые растения ежегодно, взрослые - каждые 2-3 года
+
+ПРОБЛЕМЫ: {disease_name if 'disease_name' in locals() else 'Следите за типичными для данного вида вредителями и болезнями'}
+СОВЕТ: Изучите конкретные потребности {display_name} для оптимального ухода - это поможет растению полноценно развиваться
+        """.strip()
+        
+        formatted_analysis = format_plant_analysis(analysis_text, probability)
+        
+        return {
+            "success": True,
+            "analysis": formatted_analysis,
+            "raw_analysis": analysis_text,
+            "plant_name": display_name,
+            "confidence": probability,
+            "source": "plantid_advanced",
+            "plant_details": plant_details
+        }
+        
+    except Exception as e:
+        print(f"Plant.id Advanced API error: {e}")
+        return {"success": False, "error": str(e)}
+
+async def analyze_plant_image(image_data: bytes, user_question: str = None, retry_count: int = 0) -> dict:
+    """Интеллектуальный анализ изображения растения"""
+    
+    # Попытка 1: OpenAI GPT-4 Vision (приоритет)
+    print("🔍 Попытка анализа через OpenAI GPT-4 Vision...")
+    openai_result = await analyze_with_openai_advanced(image_data, user_question)
+    
+    if openai_result["success"] and openai_result.get("confidence", 0) >= 60:
+        print(f"✅ OpenAI успешно распознал растение с {openai_result.get('confidence')}% уверенностью")
+        return openai_result
+    
+    # Попытка 2: Plant.id API 
+    print("🌿 Попытка анализа через Plant.id...")
+    plantid_result = await analyze_with_plantid_advanced(image_data)
+    
+    if plantid_result["success"] and plantid_result.get("confidence", 0) >= 50:
+        print(f"✅ Plant.id успешно распознал растение с {plantid_result.get('confidence')}% уверенностью")
+        return plantid_result
+    
+    # Попытка 3: Комбинированный подход - используем лучший из результатов
+    best_result = None
+    best_confidence = 0
+    
+    if openai_result["success"]:
+        openai_conf = openai_result.get("confidence", 0)
+        if openai_conf > best_confidence:
+            best_result = openai_result
+            best_confidence = openai_conf
+    
+    if plantid_result["success"]:
+        plantid_conf = plantid_result.get("confidence", 0)
+        if plantid_conf > best_confidence:
+            best_result = plantid_result  
+            best_confidence = plantid_conf
+    
+    if best_result and best_confidence > 30:
+        print(f"📊 Использую лучший результат с {best_confidence}% уверенностью")
+        return best_result
+    
+    # Повторная попытка с измененными параметрами (если еще не пробовали)
+    if retry_count == 0:
+        print("🔄 Повторная попытка анализа...")
+        return await analyze_plant_image(image_data, user_question, retry_count + 1)
+    
+    # Fallback с указанием проблемы
+    print("⚠️ Все методы анализа не дали уверенного результата")
+    
+    fallback_text = """
+РАСТЕНИЕ: Комнатное растение (требуется дополнительная идентификация)
+УВЕРЕННОСТЬ: Низкая - рекомендуется повторная фотография
+ПРИЗНАКИ: Недостаточно данных для точной идентификации
+СЕМЕЙСТВО: Не определено
+РОДИНА: Не определено
+
+СОСТОЯНИЕ: Требуется визуальный осмотр листьев, стебля и корневой системы
+ПОЛИВ_АНАЛИЗ: Невозможно оценить состояние полива без качественного фото
+ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы пальцем - поливайте когда верхний слой подсох на 2-3 см
+ПОЛИВ_ИНТЕРВАЛ: 5
+СВЕТ: Большинство комнатных растений предпочитают яркий рассеянный свет
+ТЕМПЕРАТУРА: 18-24°C - стандартный диапазон для комнатных растений
+ВЛАЖНОСТЬ: 40-60% влажности воздуха
+ПОДКОРМКА: В весенне-летний период раз в 2-4 недели
+ПЕРЕСАДКА: Молодые растения ежегодно, взрослые - по мере необходимости
+
+ПРОБЛЕМЫ: Наблюдайте за изменениями листьев - они покажут проблемы с уходом
+СОВЕТ: Для точной идентификации сделайте фото при хорошем освещении, показав листья крупным планом
+    """.strip()
+    
+    formatted_analysis = format_plant_analysis(fallback_text, 25)
+    
+    return {
+        "success": True,
+        "analysis": formatted_analysis,
+        "raw_analysis": fallback_text,
+        "plant_name": "Неопознанное растение",
+        "confidence": 25,
+        "source": "fallback_improved",
+        "needs_retry": True
+    }
+
+# === КОМАНДЫ ===
+
+@dp.message(Command("start"))
+async def start_command(message: types.Message):
+    """Команда /start"""
+    user_id = message.from_user.id
+    
+    try:
+        db = await get_db()
+        await db.add_user(
+            user_id=user_id,
+            username=message.from_user.username,
+            first_name=message.from_user.first_name
+        )
+    except Exception as e:
+        print(f"Ошибка добавления пользователя: {e}")
+    
+    await message.answer(
+        f"🌱 Привет, {message.from_user.first_name}!\n\n"
+        "Я умный помощник по уходу за растениями:\n"
+        "🌱 Простое добавление растений в коллекцию\n"
+        "🌿 <b>Выращивание с нуля - от семечка до взрослого растения!</b>\n"
+        "📸 Точное распознавание видов растений\n"
+        "💡 Персонализированные рекомендации по уходу\n"
+        "❓ Ответы на вопросы о растениях\n"
+        "⏰ Умные напоминания о поливе для каждого растения\n"
+        "🔔 Гибкие настройки уведомлений\n\n"
+        "Начните с <b>\"🌱 Добавить растение\"</b> или попробуйте новую функцию <b>\"🌿 Вырастить с нуля\"</b>!",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+@dp.message(Command("help"))
+async def help_command(message: types.Message):
+    """Команда /help"""
+    help_text = """
+🌱 <b>Как пользоваться ботом:</b>
+
+🌱 <b>Добавление растения в коллекцию:</b>
+• Нажми "🌱 Добавить растение" в главном меню
+• Или используй команду /add
+• Пришли фото растения для анализа и автоматического добавления
+• Получи персональные рекомендации и настройки напоминаний
+
+🌿 <b>Выращивание с нуля:</b>
+• Нажми "🌿 Вырастить с нуля" или команду /grow
+• Выбери метод: семена, черенки, луковицы
+• Получи персональный план выращивания от ИИ
+• Пошаговое сопровождение от посадки до взрослого растения
+• Специальные напоминания для каждого этапа роста
+
+📸 <b>Анализ растения (без сохранения):</b>
+• Пришли фото растения или используй /analyze
+• Получи полный анализ и рекомендации
+• Можешь сохранить результат в коллекцию
+
+⏰ <b>Умные напоминания:</b>
+• Ежедневная проверка растений в 9:00 утра (МСК)
+• Персональный график для каждого растения
+• Специальные режимы для растущих растений
+• Быстрая отметка полива из уведомления
+
+🔔 <b>Настройки уведомлений:</b>
+• Глобальное включение/выключение всех уведомлений
+• Индивидуальные настройки для каждого растения
+• Массовое управление уведомлениями коллекции
+
+❓ <b>Вопросы о растениях:</b>
+• Просто напиши вопрос в чат
+• Или используй команду /question
+• Получи экспертный совет
+
+🌿 <b>Мои растения:</b>
+• Команда /plants - просмотр коллекции
+• Отмечай полив и уход
+• Настраивай персональные интервалы
+• Полные карточки растений с историей
+
+📊 <b>Статистика:</b>
+• Команда /stats - подробная статистика
+• Отслеживай прогресс ухода
+
+<b>Для лучшего результата:</b>
+• Фотографируй при хорошем освещении
+• Покажи листья крупным планом
+• Включи в кадр всё растение целиком
+
+<b>Доступные команды в меню:</b>
+/start - главное меню
+/add - добавить растение  
+/grow - вырастить с нуля
+/analyze - анализ растения
+/question - задать вопрос
+/plants - мои растения  
+/notifications - настройки уведомлений
+/stats - статистика
+/help - эта справка
+
+💡 <b>Быстрый доступ через меню команд!</b>
+    """
+    await message.answer(help_text, parse_mode="HTML", reply_markup=main_menu())
+
+@dp.message(Command("notifications"))
+async def notifications_command(message: types.Message):
+    """Команда /notifications - быстрый доступ к настройкам уведомлений"""
+    # Вызываем тот же обработчик что и кнопка
+    callback_query = types.CallbackQuery(
+        id="cmd_notifications",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="notification_settings"
+    )
+    await notification_settings_callback(callback_query)
+
+@dp.message(Command("plants"))
+async def plants_command(message: types.Message):
+    """Команда /plants - быстрый доступ к коллекции"""
+    callback_query = types.CallbackQuery(
+        id="cmd_plants",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="my_plants"
+    )
+    await my_plants_callback(callback_query)
+
+@dp.message(Command("add"))
+async def add_command(message: types.Message):
+    """Команда /add - быстрый доступ к добавлению растения"""
+    await message.answer(
+        "🌱 <b>Добавьте растение в коллекцию</b>\n\n"
+        "📸 <b>Пришлите фото вашего растения:</b>\n"
+        "• Я определю вид и состояние растения\n"
+        "• Дам персональные рекомендации по уходу\n"
+        "• Автоматически добавлю в вашу коллекцию\n"
+        "• Настрою индивидуальные напоминания о поливе\n\n"
+        "💡 <b>Советы для лучшего результата:</b>\n"
+        "• Фотографируйте при дневном свете\n"
+        "• Покажите листья и общий вид растения\n" 
+        "• Избегайте размытых и тёмных снимков\n"
+        "• Можете добавить вопрос в описании к фото\n\n"
+        "🌿 <b>Хотите вырастить растение с нуля?</b>\n"
+        "Напишите в чат название растения, которое хотите вырастить!",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("grow"))
+async def grow_command(message: types.Message, state: FSMContext):
+    """Команда /grow - быстрый доступ к выращиванию с нуля"""
+    callback_query = types.CallbackQuery(
+        id="cmd_grow",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="grow_from_scratch"
+    )
+    await grow_from_scratch_callback(callback_query, state)
+
+@dp.message(Command("analyze"))
+async def analyze_command(message: types.Message):
+    """Команда /analyze - быстрый доступ к анализу"""
+    await message.answer(
+        "📸 <b>Отправьте фото растения для анализа</b>\n\n"
+        "💡 <b>Советы для лучшего результата:</b>\n"
+        "• Фотографируйте при дневном свете\n"
+        "• Покажите листья и общий вид растения\n" 
+        "• Избегайте размытых и тёмных снимков\n"
+        "• Можете добавить вопрос в описании к фото",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("question"))
+async def question_command(message: types.Message, state: FSMContext):
+    """Команда /question - быстрый доступ к вопросам"""
+    await message.answer(
+        "❓ <b>Задайте ваш вопрос о растениях</b>\n\n"
+        "💡 <b>Я могу помочь с:</b>\n"
+        "• Проблемами с листьями (желтеют, сохнут, опадают)\n"
+        "• Режимом полива и подкормки\n" 
+        "• Пересадкой и размножением\n"
+        "• Болезнями и вредителями\n"
+        "• Выбором места для растения\n"
+        "• Любыми другими вопросами по уходу",
+        parse_mode="HTML"
+    )
+    await state.set_state(PlantStates.waiting_question)
+
+@dp.message(Command("stats"))
+async def stats_command(message: types.Message):
+    """Команда /stats - быстрый доступ к статистике"""
+    callback_query = types.CallbackQuery(
+        id="cmd_stats",
+        from_user=message.from_user,
+        chat_instance="",
+        message=message,
+        data="stats"
+    )
+    await stats_callback(callback_query)
+
+# === СОСТОЯНИЯ FSM ===
+
+@dp.message(StateFilter(PlantStates.editing_plant_name))
+async def handle_plant_rename(message: types.Message, state: FSMContext):
+    """Обработка нового названия растения"""
+    try:
+        new_name = message.text.strip()
+        
+        # Валидация названия
+        if len(new_name) < 2:
+            await message.reply(
+                "❌ <b>Название слишком короткое</b>\n"
+                "Минимум 2 символа. Попробуйте еще раз:",
+                parse_mode="HTML"
+            )
+            return
+        
+        if len(new_name) > 50:
+            await message.reply(
+                "❌ <b>Название слишком длинное</b>\n"
+                "Максимум 50 символов. Попробуйте еще раз:",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Проверка на недопустимые символы
+        if any(char in new_name for char in ['<', '>', '"', "'"]):
+            await message.reply(
+                "❌ <b>Недопустимые символы</b>\n"
+                "Название не может содержать < > \" '\n"
+                "Попробуйте еще раз:",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Получаем ID растения из состояния
+        data = await state.get_data()
+        plant_id = data.get('editing_plant_id')
+        
+        if not plant_id:
+            await message.reply("❌ Ошибка: ID растения не найден")
+            await state.clear()
+            return
+        
+        user_id = message.from_user.id
+        
+        # Обновляем название в БД
+        db = await get_db()
+        await db.update_plant_name(plant_id, user_id, new_name)
+        
+        success_keyboard = [
+            [InlineKeyboardButton(text="⚙️ Настройки растения", callback_data=f"edit_plant_{plant_id}")],
+            [InlineKeyboardButton(text="🌿 К коллекции", callback_data="my_plants")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await message.reply(
+            f"✅ <b>Название успешно изменено!</b>\n\n"
+            f"🌱 Новое название: <b>{new_name}</b>\n\n"
+            f"Растение обновлено в вашей коллекции.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=success_keyboard)
+        )
+        
+        await state.clear()
+        
+    except Exception as e:
+        print(f"Ошибка переименования: {e}")
+        await message.reply("❌ Ошибка сохранения названия.")
+        await state.clear()
+
+@dp.message(StateFilter(PlantStates.waiting_question))
+async def handle_question(message: types.Message, state: FSMContext):
+    """Обработка текстовых вопросов с улучшенным контекстом"""
+    try:
+        processing_msg = await message.reply("🤔 <b>Консультируюсь с экспертом...</b>", parse_mode="HTML")
+        
+        user_id = message.from_user.id
+        user_context = ""
+        
+        # Добавляем контекст из последнего анализа если есть
+        if user_id in temp_analyses:
+            plant_info = temp_analyses[user_id]
+            plant_name = plant_info.get("plant_name", "растение")
+            user_context = f"\n\nКонтекст: Пользователь недавно анализировал {plant_name}. Учтите это в ответе."
+        
+        answer = None
+        
+        # Улучшенный промпт для OpenAI
+        if openai_client:
+            try:
+                enhanced_prompt = f"""
+Вы - ведущий эксперт по комнатным и садовым растениям с 30-летним опытом.
+Ответьте подробно и практично на вопрос пользователя о растениях.
+
+Структура ответа:
+1. Краткий диагноз/ответ на вопрос
+2. Подробные рекомендации по решению
+3. Дополнительные советы по профилактике
+4. При необходимости - когда обращаться к специалисту
+
+Форматирование:
+- Используйте эмодзи для наглядности
+- НЕ используйте ** для выделения текста  
+- Давайте конкретные, применимые советы
+{user_context}
+
+Вопрос: {message.text}
+                """
+                
+                response = await openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "Вы - профессиональный ботаник и консультант по растениям. Отвечайте экспертно, но доступным языком на русском."
+                        },
+                        {
+                            "role": "user",
+                            "content": enhanced_prompt
+                        }
+                    ],
+                    max_tokens=1000,
+                    temperature=0.3
+                )
+                answer = response.choices[0].message.content
+            except Exception as e:
+                print(f"OpenAI question error: {e}")
+        
+        await processing_msg.delete()
+        
+        if answer and len(answer) > 50:
+            # Применяем правильное форматирование
+            answer = format_openai_response(answer)
+            
+            # Улучшаем форматирование ответа
+            if not answer.startswith(('🌿', '💡', '🔍', '⚠️', '✅')):
+                answer = f"🌿 <b>Экспертный ответ:</b>\n\n{answer}"
+            
+            await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
+        else:
+            # Улучшенный fallback
+            fallback_answer = f"""
+🤔 <b>По вашему вопросу:</b> "{message.text}"
+
+К сожалению, сейчас не могу дать полный экспертный ответ. 
+
+💡 <b>Рекомендую:</b>
+• Сфотографируйте растение для точной диагностики
+• Опишите симптомы более подробно
+• Обратитесь в ботанический сад или садовый центр
+• Попробуйте переформулировать вопрос
+
+🌱 <b>Общие советы:</b>
+• Проверьте освещение и полив
+• Осмотрите листья на предмет вредителей  
+• Убедитесь в подходящей влажности воздуха
+
+Попробуйте задать вопрос позже или пришлите фото для анализа!
+            """
+            
+            await message.reply(fallback_answer, parse_mode="HTML", reply_markup=main_menu())
+        
+        await state.clear()
+        
+    except Exception as e:
+        print(f"Ошибка ответа на вопрос: {e}")
+        await message.reply(
+            "❌ Произошла ошибка при обработке вопроса.\n"
+            "🔄 Попробуйте переформулировать или задать вопрос позже.", 
+            reply_markup=main_menu()
+        )
+        await state.clear()
+
+# === ТЕКСТОВЫЕ СООБЩЕНИЯ ===
+
+def is_plant_related_and_safe(text: str) -> tuple[bool, str]:
+    """Проверяет, связан ли вопрос с растениями и безопасен ли он"""
+    text_lower = text.lower()
+    
+    # Запрещенные темы (наркотические и нелегальные растения)
+    forbidden_keywords = [
+        'марихуана', 'каннабис', 'конопля', 'гашиш', 'травка', 'план', 'дурь',
+        'кока', 'кокаин', 'мак', 'опиум', 'героин', 'псилоцибин', 'грибы галлюциногенные',
+        'дурман', 'белена', 'красавка', 'аяуаска', 'салвия дивинорум',
+        'наркотик', 'наркотический', 'психоактивн', 'галлюциноген', 'опьянен'
+    ]
+    
+    # Проверяем на запрещенные темы
+    for keyword in forbidden_keywords:
+        if keyword in text_lower:
+            return False, "illegal"
+    
+    # Ключевые слова растительной тематики
+    plant_keywords = [
+        'растение', 'цветок', 'дерево', 'куст', 'трава', 'листья', 'лист', 'корни', 'корень',
+        'стебель', 'ствол', 'ветки', 'ветка', 'плод', 'фрукт', 'овощ', 'ягода', 'семена', 'семя',
+        'полив', 'поливать', 'удобрение', 'подкормка', 'пересадка', 'почва', 'грунт', 'земля',
+        'горшок', 'кашпо', 'освещение', 'свет', 'солнце', 'тень', 'влажность', 'температура',
+        'болезнь', 'вредитель', 'желтеют', 'сохнут', 'вянут', 'опадают', 'гниют',
+        'фикус', 'роза', 'орхидея', 'кактус', 'суккулент', 'фиалка', 'герань', 'драцена',
+        'спатифиллум', 'монстера', 'филодендрон', 'алоэ', 'хлорофитум', 'пальма', 'папоротник',
+        'бегония', 'петуния', 'тюльпан', 'нарцисс', 'лилия', 'ромашка', 'подсолнух',
+        'томат', 'огурец', 'перец', 'баклажан', 'капуста', 'морковь', 'лук', 'чеснок',
+        'яблоня', 'груша', 'вишня', 'слива', 'виноград', 'малина', 'клубника', 'смородина',
+        'комнатный', 'домашний', 'садовый', 'огородный', 'декоративный', 'плодовый',
+        'цветение', 'цветет', 'бутон', 'соцветие', 'лепесток', 'тычинка', 'пестик',
+        'фотосинтез', 'хлорофилл', 'прививка', 'черенок', 'размножение', 'посадка', 'выращивание'
+    ]
+    
+    # Проверяем наличие растительных ключевых слов
+    for keyword in plant_keywords:
+        if keyword in text_lower:
+            return True, "plant_related"
+    
+    # Дополнительная проверка на вопросительные конструкции о растениях
+    question_patterns = [
+        'как ухаживать', 'как поливать', 'как выращивать', 'как сажать', 'как пересадить',
+        'почему желтеют', 'почему сохнут', 'почему не растет', 'почему не цветет',
+        'что с растением', 'что делать если', 'можно ли', 'нужно ли'
+    ]
+    
+    for pattern in question_patterns:
+        if pattern in text_lower:
+            return True, "plant_question"
+    
+    return False, "not_plant_related"
+
+def format_openai_response(text: str) -> str:
+    """Конвертирует Markdown форматирование в HTML для Telegram"""
+    if not text:
+        return text
+    
+    # Заменяем **текст** на <b>текст</b>
+    import re
+    
+    # Обрабатываем жирный текст
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+    
+    # Обрабатываем курсив *текст* на <i>текст</i> 
+    text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', text)
+    
+    # Убираем лишние пробелы и переносы
+    text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)  # Максимум 2 переноса подряд
+    
+    return text.strip()
+
+@dp.message(F.text, ~StateFilter(PlantStates.waiting_question, PlantStates.editing_plant_name, PlantStates.choosing_plant_to_grow))
+async def handle_text_message(message: types.Message):
+    """Обработка произвольных текстовых сообщений с автоматическим определением выращивания"""
+    try:
+        text = message.text.strip()
+        
+        # Пропускаем команды
+        if text.startswith('/'):
+            return
+        
+        # ВАЖНО: Проверяем, хочет ли пользователь что-то вырастить
+        is_growing, growing_type = is_growing_request(text)
+        
+        if is_growing:
+            # Определяем возможное растение из запроса
+            potential_plant = extract_plant_name_from_text(text)
+            
+            keyboard = [
+                [InlineKeyboardButton(text="🌿 Да, помогите!", callback_data="grow_from_scratch")],
+                [InlineKeyboardButton(text="❓ Нет, просто вопрос", callback_data="continue_as_question")],
+            ]
+            
+            await message.reply(
+                f"🌱 <b>Вы хотите вырастить растение!</b>\n\n"
+                f"{'🎯 Растение: ' + potential_plant if potential_plant else '🤔 Поняла, что касается выращивания'}\n\n"
+                f"Я могу стать вашим персональным наставником:\n"
+                f"• 📋 Дам пошаговую инструкцию\n"
+                f"• ⏰ Буду напоминать о каждом этапе\n"
+                f"• 📸 Помогу отслеживать прогресс\n"
+                f"• 🎉 Проведу от семечка до взрослого растения\n\n"
+                f"Хотите начать выращивание с моей помощью?",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+            )
+            return
+        
+        # Проверяем, связан ли текст с растениями и безопасен ли он
+        is_safe_plant_topic, reason = is_plant_related_and_safe(text)
+        
+        if reason == "illegal":
+            await message.reply(
+                "⚠️ Извините, я не могу предоставить информацию о таких растениях.\n\n"
+                "🌱 Я помогаю только с комнатными, садовыми и декоративными растениями!\n"
+                "📸 Пришлите фото своего домашнего растения для анализа.",
+                reply_markup=main_menu()
+            )
+            return
+        
+        if not is_safe_plant_topic:
+            await message.reply(
+                "🌱 Я специализируюсь только на вопросах о растениях!\n\n"
+                "💡 <b>Могу помочь с:</b>\n"
+                "• Уходом за комнатными растениями\n"
+                "• Проблемами с листьями и цветением\n"
+                "• Поливом и подкормкой\n"
+                "• Болезнями и вредителями\n"
+                "• Пересадкой и размножением\n"
+                "• <b>Выращиванием с нуля!</b>\n\n"
+                "📸 Или пришлите фото растения для анализа!",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            return
+        
+        # Обрабатываем обычный вопрос о растениях...
+        processing_msg = await message.reply("🌿 <b>Консультируюсь по вашему вопросу...</b>", parse_mode="HTML")
+        
+        user_id = message.from_user.id
+        user_context = ""
+        
+        # Добавляем контекст из последнего анализа если есть
+        if user_id in temp_analyses:
+            plant_info = temp_analyses[user_id]
+            plant_name = plant_info.get("plant_name", "растение")
+            user_context = f"\n\nКонтекст: Пользователь недавно анализировал {plant_name}. Учтите это в ответе если релевантно."
+        
+        answer = None
+        
+        # Получаем ответ через OpenAI
+        if openai_client:
+            try:
+                enhanced_prompt = f"""
+Вы - эксперт-ботаник с 30-летним опытом работы с комнатными и садовыми растениями.
+
+ВАЖНО: Отвечайте ТОЛЬКО на вопросы о растениях (комнатных, садовых, декоративных, плодовых, овощных).
+НЕ отвечайте на вопросы о наркотических, психоактивных или нелегальных растениях.
+
+Структура ответа:
+1. 🔍 Краткий анализ проблемы/вопроса
+2. 💡 Подробные рекомендации и решения  
+3. ⚠️ Что нужно избегать
+4. 📋 Пошаговый план действий (если применимо)
+5. 🌟 Дополнительные советы
+
+Форматирование:
+- Используйте эмодзи для структурирования
+- НЕ используйте ** для выделения текста
+- Будьте конкретными и практичными
+- Отвечайте на русском языке
+{user_context}
+
+Воп
