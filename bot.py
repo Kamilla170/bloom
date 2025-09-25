@@ -427,6 +427,9 @@ async def continue_as_question_callback(callback: types.CallbackQuery, state: FS
 @dp.callback_query(F.data == "grow_from_scratch")
 async def grow_from_scratch_callback(callback: types.CallbackQuery, state: FSMContext):
     """Упрощенный флоу - сразу спрашиваем что хотят вырастить"""
+    # Очищаем предыдущее состояние если есть
+    await state.clear()
+    
     await callback.message.answer(
         "🌿 <b>Выращиваем растение с нуля!</b>\n\n"
         "Я стану вашим персональным наставником и помогу "
@@ -506,6 +509,7 @@ async def handle_plant_choice_for_growing(message: types.Message, state: FSMCont
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
+            # НЕ очищаем состояние здесь - данные нужны для confirm_growing_plan_callback
         else:
             # Если AI не смог создать план
             fallback_keyboard = [
@@ -527,8 +531,8 @@ async def handle_plant_choice_for_growing(message: types.Message, state: FSMCont
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=fallback_keyboard)
             )
-        
-        await state.clear()
+            # Очищаем состояние только если план не создался
+            await state.clear()
         
     except Exception as e:
         print(f"Ошибка обработки выбора растения: {e}")
@@ -616,8 +620,21 @@ async def confirm_growing_plan_callback(callback: types.CallbackQuery, state: FS
         plant_name = data.get('plant_name')
         growing_plan = data.get('growing_plan')
         
+        print(f"DEBUG: State data = {data}")  # Для отладки
+        
         if not plant_name or not growing_plan:
-            await callback.message.answer("❌ Данные плана не найдены. Попробуйте еще раз.")
+            await callback.message.answer(
+                "❌ <b>Данные плана не найдены</b>\n\n"
+                "Это могло произойти из-за:\n"
+                "• Долгого ожидания (данные устарели)\n"
+                "• Технической ошибки\n\n"
+                "🔄 Попробуйте создать план заново:",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🌿 Создать новый план", callback_data="grow_from_scratch")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+                ])
+            )
             await callback.answer()
             return
         
@@ -643,6 +660,15 @@ async def confirm_growing_plan_callback(callback: types.CallbackQuery, state: FS
         
     except Exception as e:
         print(f"Ошибка подтверждения плана: {e}")
+        await callback.message.answer(
+            "❌ <b>Техническая ошибка</b>\n\n"
+            "Попробуйте создать план заново.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌿 Создать план", callback_data="grow_from_scratch")],
+                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+            ])
+        )
         await callback.answer("❌ Ошибка обработки")
 
 @dp.callback_query(F.data == "add_growing_photo")
