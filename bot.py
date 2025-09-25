@@ -625,7 +625,7 @@ async def get_growing_plan_from_ai(plant_name: str) -> str:
 
 @dp.callback_query(F.data == "confirm_growing_plan")
 async def confirm_growing_plan_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Подтверждение плана и запуск выращивания"""
+    """Подтверждение плана и запуск выращивания - упрощенный без фото"""
     try:
         data = await state.get_data()
         plant_name = data.get('plant_name')
@@ -649,28 +649,17 @@ async def confirm_growing_plan_callback(callback: types.CallbackQuery, state: FS
             await callback.answer()
             return
         
-        # Предлагаем добавить фото
-        keyboard = [
-            [InlineKeyboardButton(text="📸 Добавить фото", callback_data="add_growing_photo")],
-            [InlineKeyboardButton(text="🚀 Начать без фото", callback_data="start_growing_no_photo")],
-        ]
-        
-        await callback.message.answer(
-            f"🌱 <b>Отлично! Начинаем выращивание {plant_name}!</b>\n\n"
-            f"📸 <b>Хотите добавить фото семян/черенка/луковицы?</b>\n\n"
-            f"💡 Это поможет:\n"
-            f"• Отслеживать прогресс роста\n"
-            f"• Создать полный дневник выращивания\n"
-            f"• Получить более точные рекомендации\n\n"
-            f"Но можно начать и без фото - добавите позже!",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
+        # Сразу создаем план без предложения фото
+        user_id = callback.from_user.id
+        await finalize_growing_setup(callback.message, state, None, user_id)
         
         await callback.answer()
         
     except Exception as e:
         print(f"Ошибка подтверждения плана: {e}")
+        import traceback
+        traceback.print_exc()
+        
         await callback.message.answer(
             "❌ <b>Техническая ошибка</b>\n\n"
             "Попробуйте создать план заново.",
@@ -775,7 +764,7 @@ async def handle_growing_photo(message: types.Message, state: FSMContext):
         await state.clear()
 
 async def finalize_growing_setup(message_obj, state: FSMContext, photo_file_id: str, user_id: int):
-    """Финализация настройки выращивания"""
+    """Финализация настройки выращивания - упрощенная версия"""
     try:
         data = await state.get_data()
         plant_name = data.get('plant_name')
@@ -784,7 +773,6 @@ async def finalize_growing_setup(message_obj, state: FSMContext, photo_file_id: 
         print(f"DEBUG finalize_growing_setup: user_id={user_id}")
         print(f"DEBUG finalize_growing_setup: plant_name={plant_name}")
         print(f"DEBUG finalize_growing_setup: plan_exists={bool(growing_plan)}")
-        print(f"DEBUG finalize_growing_setup: photo_file_id={photo_file_id}")
         
         if not plant_name or not growing_plan:
             print("ERROR: Missing plant_name or growing_plan in finalize_growing_setup")
@@ -812,40 +800,46 @@ async def finalize_growing_setup(message_obj, state: FSMContext, photo_file_id: 
         db = await get_db()
         print("DEBUG: Got database connection")
         
-        growing_id = await db.create_growing_plant(
-            user_id=user_id,
-            plant_name=plant_name,
-            growth_method=growth_method,
-            growing_plan=growing_plan,
-            photo_file_id=photo_file_id
-        )
-        print(f"DEBUG: Created growing plant with id={growing_id}")
+        try:
+            growing_id = await db.create_growing_plant(
+                user_id=user_id,
+                plant_name=plant_name,
+                growth_method=growth_method,
+                growing_plan=growing_plan,
+                photo_file_id=photo_file_id
+            )
+            print(f"DEBUG: Created growing plant with id={growing_id}")
+        except Exception as e:
+            print(f"ERROR creating growing plant: {e}")
+            raise
         
-        # Создаем первоначальное напоминание (через 3 дня)
-        moscow_now = get_moscow_now()
-        next_reminder = moscow_now + timedelta(days=3)
-        
-        # Конвертируем в naive datetime для PostgreSQL
-        next_reminder_naive = next_reminder.replace(tzinfo=None)
-        print(f"DEBUG: Creating reminder for {next_reminder_naive}")
-        
-        await db.create_growing_reminder(
-            growing_id=growing_id,
-            user_id=user_id,
-            reminder_type="start_stage",
-            next_date=next_reminder_naive,
-            stage_number=1
-        )
-        print("DEBUG: Created reminder")
+        # Создаем первоначальное напоминание (через 3 дня) - исправленная версия
+        try:
+            moscow_now = get_moscow_now()
+            next_reminder = moscow_now + timedelta(days=3)
+            
+            # Конвертируем в naive datetime для PostgreSQL
+            next_reminder_naive = next_reminder.replace(tzinfo=None)
+            print(f"DEBUG: Creating reminder for {next_reminder_naive}")
+            
+            await db.create_growing_reminder(
+                growing_id=growing_id,
+                user_id=user_id,
+                reminder_type="start_stage",
+                next_date=next_reminder_naive,
+                stage_number=1
+            )
+            print("DEBUG: Created reminder successfully")
+        except Exception as e:
+            print(f"ERROR creating reminder: {e}")
+            # Не блокируем создание растения если не удалось создать напоминание
+            print("WARNING: Plant created but reminder failed - continuing")
         
         success_text = f"🎉 <b>Выращивание {plant_name} началось!</b>\n\n"
-        if photo_file_id:
-            success_text += f"📸 Фото сохранено в дневник роста\n"
         success_text += f"📋 План выращивания создан с учетом всех этапов\n"
-        success_text += f"⏰ Первое напоминание придет через 3 дня\n\n"
+        success_text += f"⏰ Первое напоминание придет через 3 дня\n"
         success_text += f"🌱 <b>Что теперь:</b>\n"
         success_text += f"• Следуйте инструкциям из плана\n"
-        success_text += f"• Я буду напоминать о каждом этапе\n"
         success_text += f"• Добавляйте фото в дневник роста\n"
         success_text += f"• Растение появится в вашей коллекции\n\n"
         success_text += f"🔔 Удачного выращивания!"
