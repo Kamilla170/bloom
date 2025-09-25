@@ -690,7 +690,38 @@ async def add_growing_photo_callback(callback: types.CallbackQuery, state: FSMCo
 @dp.callback_query(F.data == "start_growing_no_photo")
 async def start_growing_no_photo_callback(callback: types.CallbackQuery, state: FSMContext):
     """Начать выращивание без фото"""
-    await finalize_growing_setup(callback.message, state, None, callback.from_user.id)
+    user_id = callback.from_user.id
+    
+    try:
+        data = await state.get_data()
+        plant_name = data.get('plant_name')
+        growing_plan = data.get('growing_plan')
+        
+        print(f"DEBUG start_growing_no_photo: plant_name={plant_name}, plan_exists={bool(growing_plan)}")
+        
+        if not plant_name or not growing_plan:
+            await callback.message.answer(
+                "❌ <b>Данные плана потеряны</b>\n\n"
+                "Попробуйте создать план заново.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🌿 Создать план", callback_data="grow_from_scratch")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+                ])
+            )
+            await callback.answer()
+            return
+        
+        await finalize_growing_setup(callback.message, state, None, user_id)
+        
+    except Exception as e:
+        print(f"Ошибка start_growing_no_photo: {e}")
+        await callback.message.answer(
+            "❌ Техническая ошибка при создании плана",
+            reply_markup=main_menu()
+        )
+        await state.clear()
+    
     await callback.answer()
 
 @dp.message(StateFilter(PlantStates.waiting_growing_photo), F.photo)
@@ -698,18 +729,63 @@ async def handle_growing_photo(message: types.Message, state: FSMContext):
     """Обработка фото для выращивания"""
     try:
         photo = message.photo[-1]  # Лучшее качество
-        await finalize_growing_setup(message, state, photo.file_id, message.from_user.id)
+        user_id = message.from_user.id
+        
+        # Проверяем что данные состояния доступны
+        data = await state.get_data()
+        plant_name = data.get('plant_name')
+        growing_plan = data.get('growing_plan')
+        
+        print(f"DEBUG handle_growing_photo: plant_name={plant_name}, plan_exists={bool(growing_plan)}")
+        
+        if not plant_name or not growing_plan:
+            await message.reply(
+                "❌ <b>Данные плана потеряны</b>\n\n"
+                "Попробуйте создать план заново.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🌿 Создать план", callback_data="grow_from_scratch")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+                ])
+            )
+            return
+        
+        await finalize_growing_setup(message, state, photo.file_id, user_id)
         
     except Exception as e:
         print(f"Ошибка обработки фото выращивания: {e}")
-        await message.reply("❌ Ошибка обработки фото. Попробуйте еще раз.")
+        import traceback
+        traceback.print_exc()
+        
+        await message.reply(
+            "❌ Ошибка обработки фото. Попробуйте еще раз.",
+            reply_markup=main_menu()
+        )
+        await state.clear()
 
-async def finalize_growing_setup(message, state: FSMContext, photo_file_id: str, user_id: int):
+async def finalize_growing_setup(message_obj, state: FSMContext, photo_file_id: str, user_id: int):
     """Финализация настройки выращивания"""
     try:
         data = await state.get_data()
         plant_name = data.get('plant_name')
         growing_plan = data.get('growing_plan')
+        
+        print(f"DEBUG finalize_growing_setup: user_id={user_id}")
+        print(f"DEBUG finalize_growing_setup: plant_name={plant_name}")
+        print(f"DEBUG finalize_growing_setup: plan_exists={bool(growing_plan)}")
+        print(f"DEBUG finalize_growing_setup: photo_file_id={photo_file_id}")
+        
+        if not plant_name or not growing_plan:
+            print("ERROR: Missing plant_name or growing_plan in finalize_growing_setup")
+            await message_obj.answer(
+                "❌ <b>Критическая ошибка</b>\n\n"
+                "Данные плана не найдены.\n"
+                "Попробуйте создать план заново.",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            await state.clear()
+            return
         
         # Определяем способ выращивания из плана
         growth_method = "семена"  # по умолчанию
@@ -719,8 +795,12 @@ async def finalize_growing_setup(message, state: FSMContext, photo_file_id: str,
                     growth_method = line.replace("🎯 СПОСОБ ВЫРАЩИВАНИЯ:", "").strip()
                     break
         
+        print(f"DEBUG: growth_method={growth_method}")
+        
         # Создаем выращиваемое растение в БД
         db = await get_db()
+        print("DEBUG: Got database connection")
+        
         growing_id = await db.create_growing_plant(
             user_id=user_id,
             plant_name=plant_name,
@@ -728,15 +808,21 @@ async def finalize_growing_setup(message, state: FSMContext, photo_file_id: str,
             growing_plan=growing_plan,
             photo_file_id=photo_file_id
         )
+        print(f"DEBUG: Created growing plant with id={growing_id}")
         
         # Создаем первоначальное напоминание (через 3 дня)
+        moscow_now = get_moscow_now()
+        next_reminder = moscow_now + timedelta(days=3)
+        print(f"DEBUG: Creating reminder for {next_reminder}")
+        
         await db.create_growing_reminder(
             growing_id=growing_id,
             user_id=user_id,
             reminder_type="start_stage",
-            next_date=get_moscow_now() + timedelta(days=3),
+            next_date=next_reminder,
             stage_number=1
         )
+        print("DEBUG: Created reminder")
         
         success_text = f"🎉 <b>Выращивание {plant_name} началось!</b>\n\n"
         if photo_file_id:
@@ -756,21 +842,29 @@ async def finalize_growing_setup(message, state: FSMContext, photo_file_id: str,
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
         ]
         
-        await message.reply(
+        await message_obj.answer(
             success_text,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
         )
         
+        print("DEBUG: Success message sent, clearing state")
         await state.clear()
         
     except Exception as e:
         print(f"Ошибка финализации выращивания: {e}")
-        await message.reply(
-            "❌ Ошибка создания плана выращивания.\n"
-            "Попробуйте еще раз позже.",
-            reply_markup=main_menu()
-        )
+        import traceback
+        traceback.print_exc()
+        
+        try:
+            await message_obj.answer(
+                "❌ Ошибка создания плана выращивания.\n"
+                "Попробуйте еще раз позже.",
+                reply_markup=main_menu()
+            )
+        except Exception as e2:
+            print(f"Ошибка отправки сообщения об ошибке: {e2}")
+        
         await state.clear()
 
 @dp.callback_query(F.data == "ask_about_plan")
