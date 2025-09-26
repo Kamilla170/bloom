@@ -898,7 +898,7 @@ async def finalize_growing_setup(message_obj, state: FSMContext, photo_file_id: 
             await message_obj.answer(
                 "❌ Ошибка создания плана выращивания.\n"
                 "Попробуйте еще раз позже.",
-                reply_markup=main_menu()
+                reply_markup=simple_back_menu()
             )
         except Exception as e2:
             print(f"Ошибка отправки сообщения об ошибке: {e2}")
@@ -1506,7 +1506,7 @@ async def confirm_delete_callback(callback: types.CallbackQuery):
                 f"🔄 Все связанные напоминания отменены\n\n"
                 f"💡 Вы можете добавить новые растения в любое время",
                 parse_mode="HTML",
-                reply_markup=main_menu()
+                reply_markup=simple_back_menu()
             )
         else:
             await callback.answer("❌ Растение не найдено")
@@ -1518,6 +1518,13 @@ async def confirm_delete_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+
+def simple_back_menu():
+    """Простое меню с кнопкой "Назад" """
+    keyboard = [
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def main_menu():
     keyboard = [
@@ -2695,7 +2702,7 @@ async def water_plants_callback(callback: types.CallbackQuery):
             f"💡 <b>Помните:</b> Проверяйте влажность почвы пальцем!\n"
             f"🌡️ В жару поливайте чаще, зимой - реже",
             parse_mode="HTML",
-            reply_markup=main_menu()
+            reply_markup=simple_back_menu()
         )
         
     except Exception as e:
