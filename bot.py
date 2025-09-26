@@ -1923,44 +1923,36 @@ async def start_command(message: types.Message):
         await show_returning_user_welcome(message)
 
 async def start_onboarding(message: types.Message):
-    """Начало онбординга для нового пользователя"""
+    """Новый онбординг - сразу к делу без дублирования"""
     first_name = message.from_user.first_name or "друг"
     
     keyboard = [
-        [InlineKeyboardButton(text="✨ Показать как это работает", callback_data="onboarding_demo")],
-        [InlineKeyboardButton(text="🚀 Сразу начать", callback_data="onboarding_quick_start")],
+        [InlineKeyboardButton(text="✨ Покажи пример", callback_data="onboarding_demo")],
+        [InlineKeyboardButton(text="🚀 Хочу попробовать сразу", callback_data="onboarding_quick_start")],
     ]
     
     await message.answer(
-        f"🌱 Привет, {first_name}! Я Bloom - ваш помощник для выращивания растений\n\n"
-        "За пару секунд я могу:\n"
-        "📸 Определить любое растение по фото\n"
-        "💡 Дать персональные рекомендации по уходу\n"
-        "⏰ Настроить умные напоминания о поливе и уходе\n"
-        "🌿 Помочь вырастить растение с нуля",
-        parse_mode="HTML",
+        f"🌱 Отлично, {first_name}! Готов стать вашим садовым помощником!\n\n"
+        "Давайте я покажу, как это работает на примере, а потом вы попробуете сами?",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
 
 async def show_returning_user_welcome(message: types.Message):
-    """Приветствие для возвращающихся пользователей"""
+    """Простое приветствие для возвращающихся пользователей"""
     first_name = message.from_user.first_name or "друг"
     
     await message.answer(
         f"🌱 С возвращением, {first_name}!\n\n"
-        "Рад снова видеть вас в Bloom! Готов помочь с вашими растениями.\n\n"
-        "Выберите действие:",
-        parse_mode="HTML",
+        "Что будем делать с растениями сегодня?",
         reply_markup=main_menu()
     )
 
 @dp.callback_query(F.data == "onboarding_demo")
 async def onboarding_demo_callback(callback: types.CallbackQuery):
-    """Показ демо анализа"""
+    """Показ демо анализа - новая версия"""
     
-    # Имитация анализа растения (пока без реального фото)
     demo_text = (
-        "🔍 <b>Вот как я анализирую растения:</b>\n\n"
+        "🔍 <b>Смотрите! Вот как я анализирую растения:</b>\n\n"
         "🌿 <b>Фикус Бенджамина</b> (Ficus benjamina)\n"
         "🎯 <b>Уверенность:</b> 95%\n\n"
         "✅ <b>Состояние:</b> Здоровое, но нуждается в поливе\n"
@@ -1968,13 +1960,13 @@ async def onboarding_demo_callback(callback: types.CallbackQuery):
         "☀️ <b>Освещение:</b> Яркий рассеянный свет\n"
         "🌡️ <b>Температура:</b> 18-24°C\n\n"
         "📍 <b>Персональная рекомендация:</b> Переставьте ближе к окну, почва слегка пересохла\n\n"
-        "Круто, правда? 😎"
+        "Круто, да? Теперь ваша очередь! С чего начнем?"
     )
     
     keyboard = [
-        [InlineKeyboardButton(text="📸 Попробовать с моим растением", callback_data="onboarding_try_analyze")],
-        [InlineKeyboardButton(text="🌱 Вырастить что-то новое", callback_data="onboarding_try_grow")],
-        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="onboarding_finish")],
+        [InlineKeyboardButton(text="📸 Проанализировать мое растение", callback_data="onboarding_try_analyze")],
+        [InlineKeyboardButton(text="🌿 Вырастить что-то новое", callback_data="onboarding_try_grow")],
+        [InlineKeyboardButton(text="❓ Задать вопрос о растениях", callback_data="onboarding_try_question")],
     ]
     
     await callback.message.answer(
@@ -1986,26 +1978,27 @@ async def onboarding_demo_callback(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "onboarding_quick_start")
 async def onboarding_quick_start_callback(callback: types.CallbackQuery):
-    """Быстрый старт без демо"""
-    await show_quick_start_menu(callback.message)
-    await callback.answer()
-
-async def show_quick_start_menu(message_obj):
-    """Меню быстрого старта"""
+    """Быстрый старт - обновленная версия"""
+    
     keyboard = [
-        [InlineKeyboardButton(text="📸 Проанализировать мое растение", callback_data="onboarding_try_analyze")],
+        [InlineKeyboardButton(text="📸 Проанализировать растение", callback_data="onboarding_try_analyze")],
         [InlineKeyboardButton(text="🌿 Вырастить с нуля", callback_data="onboarding_try_grow")],
-        [InlineKeyboardButton(text="❓ Задать вопрос о растениях", callback_data="onboarding_try_question")],
-        [InlineKeyboardButton(text="🏠 Посмотреть все возможности", callback_data="onboarding_finish")],
+        [InlineKeyboardButton(text="❓ Задать вопрос", callback_data="onboarding_try_question")],
+        [InlineKeyboardButton(text="💡 Сначала покажи пример", callback_data="onboarding_demo")],
     ]
     
-    await message_obj.answer(
-        "🎯 <b>С чего начнем?</b>",
+    await callback.message.answer(
+        "🎯 <b>Отлично! С чего начнем ваше садовое приключение?</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
+    await callback.answer()
 
-# Обработчики действий из онбординга
+async def show_quick_start_menu(message_obj):
+    """Убираем эту функцию - теперь используем callback выше"""
+    pass
+
+# Обработчики действий из онбординга - обновленные
 @dp.callback_query(F.data == "onboarding_try_analyze")
 async def onboarding_try_analyze_callback(callback: types.CallbackQuery):
     """Попробовать анализ из онбординга"""
@@ -2016,7 +2009,8 @@ async def onboarding_try_analyze_callback(callback: types.CallbackQuery):
         "💡 <b>Советы для лучшего результата:</b>\n"
         "• Фотографируйте при дневном свете\n"
         "• Покажите листья и общий вид растения\n"
-        "• Избегайте размытых и тёмных снимков",
+        "• Избегайте размытых и тёмных снимков\n\n"
+        "📱 Жду ваше фото!",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -2029,7 +2023,8 @@ async def onboarding_try_grow_callback(callback: types.CallbackQuery, state: FSM
     await callback.message.answer(
         "🌿 <b>Отлично! Выращиваем растение с нуля!</b>\n\n"
         "🌱 <b>Напишите, что хотите вырастить:</b>\n\n"
-        "💡 <b>Примеры:</b> Базилик, Герань, Тюльпаны, Фикус, Помидоры, Укроп, Фиалка",
+        "💡 <b>Примеры:</b> Базилик, Герань, Тюльпаны, Фикус, Помидоры, Укроп, Фиалка\n\n"
+        "✍️ Просто напишите название растения!",
         parse_mode="HTML"
     )
     
@@ -2048,7 +2043,8 @@ async def onboarding_try_question_callback(callback: types.CallbackQuery, state:
         "• Режимом полива и подкормки\n"
         "• Пересадкой и размножением\n"
         "• Болезнями и вредителями\n"
-        "• Выбором места для растения",
+        "• Выбором места для растения\n\n"
+        "✍️ Напишите ваш вопрос:",
         parse_mode="HTML"
     )
     
@@ -2057,12 +2053,12 @@ async def onboarding_try_question_callback(callback: types.CallbackQuery, state:
 
 @dp.callback_query(F.data == "onboarding_finish")
 async def onboarding_finish_callback(callback: types.CallbackQuery):
-    """Завершение онбординга"""
+    """Завершение онбординга - убираем, больше не нужно"""
     await mark_onboarding_completed(callback.from_user.id)
     
     await callback.message.answer(
         "🌱 <b>Добро пожаловать в Bloom!</b>\n\n"
-        "Теперь вы знаете мои возможности. Выберите любое действие:",
+        "Выберите любое действие:",
         parse_mode="HTML",
         reply_markup=main_menu()
     )
