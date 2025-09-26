@@ -91,6 +91,10 @@ class PlantStates(StatesGroup):
     planting_setup = State()
     waiting_growing_photo = State()
     adding_diary_entry = State()
+    # Онбординг
+    onboarding_welcome = State()
+    onboarding_demo = State()
+    onboarding_quick_start = State()
 
 # Функция для получения текущего московского времени
 def get_moscow_now():
@@ -570,7 +574,7 @@ async def handle_plant_choice_for_growing(message: types.Message, state: FSMCont
         await message.reply(
             "❌ Произошла ошибка при обработке.\n"
             "Попробуйте еще раз или выберите другое растение.",
-            reply_markup=main_menu()
+            reply_markup=simple_back_menu()
         )
         await state.clear()
 
@@ -1260,8 +1264,7 @@ async def save_plant_callback(callback: types.CallbackQuery):
             
             await callback.message.answer(
                 success_text,
-                parse_mode="HTML",
-                reply_markup=main_menu()
+                parse_mode="HTML"
             )
             
         except Exception as e:
@@ -1886,33 +1889,196 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None, retr
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
-    """Команда /start"""
+    """Команда /start с онбордингом для новых пользователей"""
     user_id = message.from_user.id
     
     try:
         db = await get_db()
-        await db.add_user(
-            user_id=user_id,
-            username=message.from_user.username,
-            first_name=message.from_user.first_name
-        )
+        
+        # Проверяем, новый ли это пользователь
+        async with db.pool.acquire() as conn:
+            existing_user = await conn.fetchrow(
+                "SELECT user_id FROM users WHERE user_id = $1", user_id
+            )
+            
+            if not existing_user:
+                # Новый пользователь - добавляем в БД
+                await db.add_user(
+                    user_id=user_id,
+                    username=message.from_user.username,
+                    first_name=message.from_user.first_name
+                )
+                
+                # Запускаем онбординг
+                await start_onboarding(message)
+                return
+            else:
+                # Существующий пользователь - обычное приветствие
+                await show_returning_user_welcome(message)
+                return
+                
     except Exception as e:
-        print(f"Ошибка добавления пользователя: {e}")
+        print(f"Ошибка команды /start: {e}")
+        # Fallback - показываем обычное меню
+        await show_returning_user_welcome(message)
+
+async def start_onboarding(message: types.Message):
+    """Начало онбординга для нового пользователя"""
+    first_name = message.from_user.first_name or "друг"
+    
+    keyboard = [
+        [InlineKeyboardButton(text="✨ Показать как это работает", callback_data="onboarding_demo")],
+        [InlineKeyboardButton(text="🚀 Сразу начать", callback_data="onboarding_quick_start")],
+    ]
     
     await message.answer(
-        f"🌱 Привет, {message.from_user.first_name}!\n\n"
-        "Я умный помощник по уходу за растениями:\n"
-        "🌱 Простое добавление растений в коллекцию\n"
-        "🌿 <b>Выращивание с нуля - от семечка до взрослого растения!</b>\n"
-        "📸 Точное распознавание видов растений\n"
-        "💡 Персонализированные рекомендации по уходу\n"
-        "❓ Ответы на вопросы о растениях\n"
-        "⏰ Умные напоминания о поливе для каждого растения\n"
-        "🔔 Гибкие настройки уведомлений\n\n"
-        "Начните с <b>\"🌱 Добавить растение\"</b> или попробуйте новую функцию <b>\"🌿 Вырастить с нуля\"</b>!",
+        f"🌱 Привет, {first_name}! Я Bloom - ваш помощник для выращивания растений\n\n"
+        "За пару секунд я могу:\n"
+        "📸 Определить любое растение по фото\n"
+        "💡 Дать персональные рекомендации по уходу\n"
+        "⏰ Настроить умные напоминания о поливе и уходе\n"
+        "🌿 Помочь вырастить растение с нуля",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+async def show_returning_user_welcome(message: types.Message):
+    """Приветствие для возвращающихся пользователей"""
+    first_name = message.from_user.first_name or "друг"
+    
+    await message.answer(
+        f"🌱 С возвращением, {first_name}!\n\n"
+        "Рад снова видеть вас в Bloom! Готов помочь с вашими растениями.\n\n"
+        "Выберите действие:",
         parse_mode="HTML",
         reply_markup=main_menu()
     )
+
+@dp.callback_query(F.data == "onboarding_demo")
+async def onboarding_demo_callback(callback: types.CallbackQuery):
+    """Показ демо анализа"""
+    
+    # Имитация анализа растения (пока без реального фото)
+    demo_text = (
+        "🔍 <b>Вот как я анализирую растения:</b>\n\n"
+        "🌿 <b>Фикус Бенджамина</b> (Ficus benjamina)\n"
+        "🎯 <b>Уверенность:</b> 95%\n\n"
+        "✅ <b>Состояние:</b> Здоровое, но нуждается в поливе\n"
+        "💧 <b>Полив:</b> каждые 5 дней\n"
+        "☀️ <b>Освещение:</b> Яркий рассеянный свет\n"
+        "🌡️ <b>Температура:</b> 18-24°C\n\n"
+        "📍 <b>Персональная рекомендация:</b> Переставьте ближе к окну, почва слегка пересохла\n\n"
+        "Круто, правда? 😎"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton(text="📸 Попробовать с моим растением", callback_data="onboarding_try_analyze")],
+        [InlineKeyboardButton(text="🌱 Вырастить что-то новое", callback_data="onboarding_try_grow")],
+        [InlineKeyboardButton(text="🏠 В главное меню", callback_data="onboarding_finish")],
+    ]
+    
+    await callback.message.answer(
+        demo_text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "onboarding_quick_start")
+async def onboarding_quick_start_callback(callback: types.CallbackQuery):
+    """Быстрый старт без демо"""
+    await show_quick_start_menu(callback.message)
+    await callback.answer()
+
+async def show_quick_start_menu(message_obj):
+    """Меню быстрого старта"""
+    keyboard = [
+        [InlineKeyboardButton(text="📸 Проанализировать мое растение", callback_data="onboarding_try_analyze")],
+        [InlineKeyboardButton(text="🌿 Вырастить с нуля", callback_data="onboarding_try_grow")],
+        [InlineKeyboardButton(text="❓ Задать вопрос о растениях", callback_data="onboarding_try_question")],
+        [InlineKeyboardButton(text="🏠 Посмотреть все возможности", callback_data="onboarding_finish")],
+    ]
+    
+    await message_obj.answer(
+        "🎯 <b>С чего начнем?</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+# Обработчики действий из онбординга
+@dp.callback_query(F.data == "onboarding_try_analyze")
+async def onboarding_try_analyze_callback(callback: types.CallbackQuery):
+    """Попробовать анализ из онбординга"""
+    await mark_onboarding_completed(callback.from_user.id)
+    
+    await callback.message.answer(
+        "📸 <b>Отлично! Пришлите фото вашего растения</b>\n\n"
+        "💡 <b>Советы для лучшего результата:</b>\n"
+        "• Фотографируйте при дневном свете\n"
+        "• Покажите листья и общий вид растения\n"
+        "• Избегайте размытых и тёмных снимков",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "onboarding_try_grow")
+async def onboarding_try_grow_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Попробовать выращивание из онбординга"""
+    await mark_onboarding_completed(callback.from_user.id)
+    
+    await callback.message.answer(
+        "🌿 <b>Отлично! Выращиваем растение с нуля!</b>\n\n"
+        "🌱 <b>Напишите, что хотите вырастить:</b>\n\n"
+        "💡 <b>Примеры:</b> Базилик, Герань, Тюльпаны, Фикус, Помидоры, Укроп, Фиалка",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(PlantStates.choosing_plant_to_grow)
+    await callback.answer()
+
+@dp.callback_query(F.data == "onboarding_try_question")
+async def onboarding_try_question_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Попробовать вопрос из онбординга"""
+    await mark_onboarding_completed(callback.from_user.id)
+    
+    await callback.message.answer(
+        "❓ <b>Задайте ваш вопрос о растениях</b>\n\n"
+        "💡 <b>Я могу помочь с:</b>\n"
+        "• Проблемами с листьями (желтеют, сохнут, опадают)\n"
+        "• Режимом полива и подкормки\n"
+        "• Пересадкой и размножением\n"
+        "• Болезнями и вредителями\n"
+        "• Выбором места для растения",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(PlantStates.waiting_question)
+    await callback.answer()
+
+@dp.callback_query(F.data == "onboarding_finish")
+async def onboarding_finish_callback(callback: types.CallbackQuery):
+    """Завершение онбординга"""
+    await mark_onboarding_completed(callback.from_user.id)
+    
+    await callback.message.answer(
+        "🌱 <b>Добро пожаловать в Bloom!</b>\n\n"
+        "Теперь вы знаете мои возможности. Выберите любое действие:",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+
+async def mark_onboarding_completed(user_id: int):
+    """Отметить онбординг как завершенный"""
+    try:
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET onboarding_completed = TRUE WHERE user_id = $1",
+                user_id
+            )
+    except Exception as e:
+        print(f"Ошибка отметки онбординга: {e}")
 
 @dp.message(Command("grow"))
 async def grow_command(message: types.Message, state: FSMContext):
@@ -2214,7 +2380,7 @@ async def handle_question(message: types.Message, state: FSMContext):
             if not answer.startswith(('🌿', '💡', '🔍', '⚠️', '✅')):
                 answer = f"🌿 <b>Экспертный ответ:</b>\n\n{answer}"
             
-            await message.reply(answer, parse_mode="HTML", reply_markup=main_menu())
+            await message.reply(answer, parse_mode="HTML")
         else:
             # Улучшенный fallback
             fallback_answer = f"""
@@ -2236,7 +2402,7 @@ async def handle_question(message: types.Message, state: FSMContext):
 Попробуйте задать вопрос позже или пришлите фото для анализа!
             """
             
-            await message.reply(fallback_answer, parse_mode="HTML", reply_markup=main_menu())
+            await message.reply(fallback_answer, parse_mode="HTML", reply_markup=simple_back_menu())
         
         await state.clear()
         
@@ -2333,7 +2499,7 @@ async def handle_photo(message: types.Message):
                 f"• Показать растение целиком\n"
                 f"• Повторить попытку через минуту",
                 parse_mode="HTML",
-                reply_markup=main_menu()
+                reply_markup=simple_back_menu()
             )
             
     except Exception as e:
@@ -2341,7 +2507,7 @@ async def handle_photo(message: types.Message):
         await message.reply(
             "❌ Произошла техническая ошибка при анализе.\n"
             "🔄 Пожалуйста, попробуйте позже или обратитесь в поддержку.",
-            reply_markup=main_menu()
+            reply_markup=simple_back_menu()
         )
 
 # === ПРОСТЫЕ CALLBACK ОБРАБОТЧИКИ ===
@@ -2562,7 +2728,7 @@ async def stats_callback(callback: types.CallbackQuery):
         await callback.message.answer(
             "❌ Ошибка загрузки статистики.\n"
             "Попробуйте позже.",
-            reply_markup=main_menu()
+            reply_markup=simple_back_menu()
         )
     
     # Не вызываем callback.answer() для команд
