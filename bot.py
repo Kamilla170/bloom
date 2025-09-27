@@ -100,6 +100,12 @@ class PlantStates(StatesGroup):
     onboarding_demo = State()
     onboarding_quick_start = State()
 
+# Состояния для обратной связи
+class FeedbackStates(StatesGroup):
+    choosing_type = State()
+    writing_message = State()
+    adding_photo = State()
+
 # Функция для получения текущего московского времени
 def get_moscow_now():
     """Получить текущее время в московской зоне"""
@@ -1521,7 +1527,251 @@ async def confirm_delete_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+# === ОБРАБОТЧИКИ ОБРАТНОЙ СВЯЗИ ===
+
+@dp.callback_query(F.data == "feedback")
+async def feedback_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Меню обратной связи"""
+    keyboard = [
+        [InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="feedback_bug")],
+        [InlineKeyboardButton(text="❌ Неточный анализ", callback_data="feedback_analysis_error")],
+        [InlineKeyboardButton(text="💡 Предложить улучшение", callback_data="feedback_suggestion")],
+        [InlineKeyboardButton(text="⭐ Общий отзыв", callback_data="feedback_review")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ]
+    
+    await callback.message.answer(
+        "📝 <b>Обратная связь</b>\n\n"
+        "Ваше мнение помогает улучшать бота!\n"
+        "Выберите тип сообщения:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("feedback_"))
+async def feedback_type_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор типа обратной связи"""
+    feedback_type = callback.data.replace("feedback_", "")
+    
+    type_messages = {
+        "bug": {
+            "title": "🐛 Сообщить о баге",
+            "description": "Опишите техническую проблему:\n• Что произошло?\n• Какие действия привели к ошибке?\n• Какой результат ожидали?"
+        },
+        "analysis_error": {
+            "title": "❌ Неточный анализ",
+            "description": "Расскажите о неправильном определении растения:\n• Какое растение на самом деле?\n• Что бот определил неверно?\n• Можете приложить фото для примера"
+        },
+        "suggestion": {
+            "title": "💡 Предложить улучшение",
+            "description": "Поделитесь идеей по улучшению бота:\n• Какую функцию хотели бы добавить?\n• Что можно сделать лучше?\n• Как это поможет пользователям?"
+        },
+        "review": {
+            "title": "⭐ Общий отзыв",
+            "description": "Поделитесь впечатлениями от использования:\n• Что нравится?\n• Что не нравится?\n• Общая оценка работы бота"
+        }
+    }
+    
+    type_info = type_messages.get(feedback_type, type_messages["review"])
+    
+    await state.update_data(feedback_type=feedback_type)
+    await state.set_state(FeedbackStates.writing_message)
+    
+    await callback.message.answer(
+        f"{type_info['title']}\n\n"
+        f"{type_info['description']}\n\n"
+        f"✍️ Напишите ваше сообщение:",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(StateFilter(FeedbackStates.writing_message))
+async def handle_feedback_message(message: types.Message, state: FSMContext):
+    """Обработка текста обратной связи"""
+    try:
+        feedback_text = message.text.strip()
+        
+        if len(feedback_text) < 10:
+            await message.reply(
+                "📝 <b>Сообщение слишком короткое</b>\n\n"
+                "Пожалуйста, опишите подробнее (минимум 10 символов):",
+                parse_mode="HTML"
+            )
+            return
+        
+        if len(feedback_text) > 2000:
+            await message.reply(
+                "📝 <b>Сообщение слишком длинное</b>\n\n"
+                "Максимум 2000 символов. Сократите текст:",
+                parse_mode="HTML"
+            )
+            return
+        
+        await state.update_data(feedback_message=feedback_text)
+        
+        # Предлагаем добавить фото
+        keyboard = [
+            [InlineKeyboardButton(text="📸 Добавить фото", callback_data="feedback_add_photo")],
+            [InlineKeyboardButton(text="📤 Отправить без фото", callback_data="feedback_send_without_photo")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="feedback_cancel")],
+        ]
+        
+        await message.reply(
+            "✅ <b>Сообщение принято!</b>\n\n"
+            "📸 Хотите добавить фото к обратной связи?\n"
+            "(Особенно полезно для багов и неточного анализа)",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        print(f"Ошибка обработки сообщения обратной связи: {e}")
+        await message.reply("❌ Ошибка обработки сообщения. Попробуйте еще раз.")
+        await state.clear()
+
+@dp.callback_query(F.data == "feedback_add_photo")
+async def feedback_add_photo_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Запрос фото для обратной связи"""
+    await callback.message.answer(
+        "📸 <b>Добавление фото</b>\n\n"
+        "Пришлите фото, которое поможет понять проблему или предложение:\n\n"
+        "💡 <b>Например:</b>\n"
+        "• Скриншот ошибки\n"
+        "• Фото неправильно определенного растения\n"
+        "• Изображение для иллюстрации идеи",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(FeedbackStates.adding_photo)
+    await callback.answer()
+
+@dp.message(StateFilter(FeedbackStates.adding_photo), F.photo)
+async def handle_feedback_photo(message: types.Message, state: FSMContext):
+    """Обработка фото обратной связи"""
+    try:
+        photo = message.photo[-1]
+        
+        await state.update_data(feedback_photo=photo.file_id)
+        
+        # Отправляем обратную связь
+        await send_feedback(message, state)
+        
+    except Exception as e:
+        print(f"Ошибка обработки фото обратной связи: {e}")
+        await message.reply("❌ Ошибка обработки фото. Попробуйте еще раз.")
+
+@dp.message(StateFilter(FeedbackStates.adding_photo))
+async def handle_feedback_no_photo(message: types.Message, state: FSMContext):
+    """Обработка текста вместо фото при добавлении фото к обратной связи"""
+    if message.photo:
+        # Если все-таки прислали фото, обрабатываем как фото
+        await handle_feedback_photo(message, state)
+    else:
+        # Если прислали текст, отправляем без фото
+        await message.reply(
+            "📝 <b>Текст получен</b>\n\n"
+            "Отправляю обратную связь без дополнительного фото.",
+            parse_mode="HTML"
+        )
+        await send_feedback(message, state)
+
+@dp.callback_query(F.data == "feedback_send_without_photo")
+async def feedback_send_without_photo_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Отправка обратной связи без фото"""
+    await send_feedback(callback.message, state)
+    await callback.answer()
+
+@dp.callback_query(F.data == "feedback_cancel")
+async def feedback_cancel_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена обратной связи"""
+    await state.clear()
+    
+    await callback.message.answer(
+        "❌ <b>Обратная связь отменена</b>\n\n"
+        "Вы можете отправить ее в любое время через главное меню.",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+
+async def send_feedback(message_obj, state: FSMContext):
+    """Отправка обратной связи в БД и уведомление"""
+    try:
+        data = await state.get_data()
+        feedback_type = data.get('feedback_type', 'review')
+        feedback_message = data.get('feedback_message', '')
+        feedback_photo = data.get('feedback_photo')
+        
+        user_id = message_obj.from_user.id
+        username = message_obj.from_user.username or message_obj.from_user.first_name or f"user_{user_id}"
+        
+        # Подготавливаем контекст если есть последний анализ
+        context_data = None
+        if user_id in temp_analyses:
+            context_data = json.dumps({
+                "last_analysis": temp_analyses[user_id].get("plant_name", "Unknown"),
+                "confidence": temp_analyses[user_id].get("confidence", 0),
+                "source": temp_analyses[user_id].get("source", "unknown")
+            })
+        
+        # Сохраняем в БД
+        db = await get_db()
+        feedback_id = await db.save_feedback(
+            user_id=user_id,
+            username=username,
+            feedback_type=feedback_type,
+            message=feedback_message,
+            photo_file_id=feedback_photo,
+            context_data=context_data
+        )
+        
+        # Логируем в консоль для разработчика
+        type_icons = {
+            "bug": "🐛",
+            "analysis_error": "❌", 
+            "suggestion": "💡",
+            "review": "⭐"
+        }
+        
+        icon = type_icons.get(feedback_type, "📝")
+        print(f"\n{icon} НОВАЯ ОБРАТНАЯ СВЯЗЬ #{feedback_id}")
+        print(f"👤 Пользователь: @{username} (ID: {user_id})")
+        print(f"📝 Тип: {feedback_type}")
+        print(f"💬 Сообщение: {feedback_message[:100]}{'...' if len(feedback_message) > 100 else ''}")
+        if feedback_photo:
+            print(f"📸 Фото: {feedback_photo}")
+        if context_data:
+            print(f"🔗 Контекст: {context_data}")
+        print("=" * 50)
+        
+        # Благодарим пользователя
+        type_thanks = {
+            "bug": "Спасибо за сообщение о баге! Мы исправим проблему.",
+            "analysis_error": "Спасибо за информацию! Это поможет улучшить точность анализа.",
+            "suggestion": "Отличная идея! Рассмотрим возможность добавления.",
+            "review": "Спасибо за отзыв! Ваше мнение очень важно."
+        }
+        
+        thanks_message = type_thanks.get(feedback_type, "Спасибо за обратную связь!")
+        
+        await message_obj.answer(
+            f"✅ <b>Обратная связь отправлена!</b>\n\n"
+            f"{thanks_message}\n\n"
+            f"🆔 Номер обращения: #{feedback_id}\n"
+            f"📧 Мы рассмотрим ваше сообщение и при необходимости свяжемся с вами.",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+        await state.clear()
+        
+    except Exception as e:
+        print(f"Ошибка отправки обратной связи: {e}")
+        await message_obj.answer(
+            "❌ Ошибка отправки обратной связи.\n"
+            "Попробуйте позже или напишите разработчику напрямую."
+        )
 
 def simple_back_menu():
     """Простое меню с кнопкой "Назад" """
@@ -1546,6 +1796,9 @@ def main_menu():
         ],
         [
             InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+            InlineKeyboardButton(text="📝 Обратная связь", callback_data="feedback")
+        ],
+        [
             InlineKeyboardButton(text="ℹ️ Справка", callback_data="help")
         ]
     ]
@@ -2350,9 +2603,39 @@ async def help_command(message: types.Message):
 /question - Задать вопрос
 /plants - Мои растения
 /stats - Статистика
+/feedback - Обратная связь
 /help - Справка
     """
-    await message.answer(help_text, parse_mode="HTML", reply_markup=main_menu())
+    
+    keyboard = [
+        [InlineKeyboardButton(text="📝 Обратная связь", callback_data="feedback")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ]
+    
+    await message.answer(
+        help_text, 
+        parse_mode="HTML", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+
+@dp.message(Command("feedback"))
+async def feedback_command(message: types.Message, state: FSMContext):
+    """Команда /feedback - обратная связь"""
+    keyboard = [
+        [InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="feedback_bug")],
+        [InlineKeyboardButton(text="❌ Неточный анализ", callback_data="feedback_analysis_error")],
+        [InlineKeyboardButton(text="💡 Предложить улучшение", callback_data="feedback_suggestion")],
+        [InlineKeyboardButton(text="⭐ Общий отзыв", callback_data="feedback_review")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ]
+    
+    await message.answer(
+        "📝 <b>Обратная связь</b>\n\n"
+        "Ваше мнение помогает улучшать бота!\n"
+        "Выберите тип сообщения:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
 @dp.message(Command("add"))
 async def add_command(message: types.Message):
@@ -3001,7 +3284,17 @@ async def help_callback(callback: types.CallbackQuery):
 /stats - Статистика
 /help - Справка
     """
-    await callback.message.answer(help_text, parse_mode="HTML", reply_markup=main_menu())
+    
+    keyboard = [
+        [InlineKeyboardButton(text="📝 Обратная связь", callback_data="feedback")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ]
+    
+    await callback.message.answer(
+        help_text, 
+        parse_mode="HTML", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
     await callback.answer()
 
 @dp.callback_query(F.data == "notification_settings")
@@ -3173,7 +3466,7 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI Plant Care Assistant", 
-        "version": "3.3",
+        "version": "3.4",
         "features": [
             "smart_plant_analysis", 
             "honest_limitations_reporting", 
@@ -3182,9 +3475,11 @@ async def health_check(request):
             "easy_plant_adding", 
             "grow_from_scratch",
             "growth_diary",
-            "stage_tracking"
+            "stage_tracking",
+            "user_feedback_system"
         ],
         "analysis_approach": "visible_elements_with_honest_limitations",
+        "feedback_types": ["bug", "analysis_error", "suggestion", "review"],
         "reminder_schedule": "daily_at_09:00_MSK_UTC+3"
     })
 
@@ -3205,10 +3500,11 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         await site.start()
         
-        print(f"🚀 Bloom AI Plant Bot v3.3 запущен на порту {PORT}")
+        print(f"🚀 Bloom AI Plant Bot v3.4 запущен на порту {PORT}")
         print(f"🎯 Умный анализ растений с честным подходом!")
         print(f"🌿 Функция выращивания с нуля активна!")
         print(f"📝 Дневник роста и отслеживание этапов!")
+        print(f"💬 Система обратной связи работает!")
         print(f"⏰ Умные напоминания активны (МСК UTC+3)!")
         
         try:
@@ -3223,6 +3519,7 @@ async def main():
         print(f"🎯 Умный анализ растений с честным подходом!")
         print(f"🌿 Функция выращивания с нуля активна!")
         print(f"📝 Дневник роста и отслеживание этапов!")
+        print(f"💬 Система обратной связи работает!")
         print(f"⏰ Умные напоминания активны (МСК UTC+3)!")
         try:
             await dp.start_polling(bot, drop_pending_updates=True)
