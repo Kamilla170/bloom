@@ -24,7 +24,7 @@ class PlantDatabase:
             print(f"❌ Ошибка подключения к БД: {e}")
             
     async def create_tables(self):
-        """Создание таблиц включая новые для выращивания"""
+        """Создание таблиц включая новые для выращивания и обратной связи"""
         async with self.pool.acquire() as conn:
             # Таблица пользователей
             await conn.execute("""
@@ -153,6 +153,22 @@ class PlantDatabase:
                 )
             """)
             
+            # НОВАЯ ТАБЛИЦА: Обратная связь
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    username TEXT,
+                    feedback_type TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    photo_file_id TEXT,
+                    context_data TEXT,
+                    status TEXT DEFAULT 'new',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+            
             # Добавляем новые колонки если они не существуют
             try:
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS custom_name TEXT")
@@ -177,6 +193,9 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_plant_id ON care_history (plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_stages_growing_plant_id ON growth_stages (growing_plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_diary_growing_plant_id ON growth_diary (growing_plant_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback (user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback (status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_type ON feedback (feedback_type)")
             
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
         """Извлекает название растения из текста анализа"""
@@ -221,6 +240,49 @@ class PlantDatabase:
                 VALUES ($1)
                 ON CONFLICT (user_id) DO NOTHING
             """, user_id)
+    
+    # === МЕТОДЫ ДЛЯ ОБРАТНОЙ СВЯЗИ ===
+    
+    async def save_feedback(self, user_id: int, username: str, feedback_type: str, 
+                          message: str, photo_file_id: str = None, context_data: str = None) -> int:
+        """Сохранить обратную связь"""
+        async with self.pool.acquire() as conn:
+            feedback_id = await conn.fetchval("""
+                INSERT INTO feedback (user_id, username, feedback_type, message, photo_file_id, context_data)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id
+            """, user_id, username, feedback_type, message, photo_file_id, context_data)
+            
+            return feedback_id
+    
+    async def get_feedback_stats(self) -> Dict:
+        """Получить статистику обратной связи"""
+        async with self.pool.acquire() as conn:
+            stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_feedback,
+                    COUNT(CASE WHEN feedback_type = 'bug' THEN 1 END) as bugs,
+                    COUNT(CASE WHEN feedback_type = 'analysis_error' THEN 1 END) as analysis_errors,
+                    COUNT(CASE WHEN feedback_type = 'suggestion' THEN 1 END) as suggestions,
+                    COUNT(CASE WHEN feedback_type = 'review' THEN 1 END) as reviews,
+                    COUNT(CASE WHEN status = 'new' THEN 1 END) as new_feedback
+                FROM feedback
+            """)
+            
+            return dict(stats) if stats else {}
+    
+    async def get_recent_feedback(self, limit: int = 10) -> List[Dict]:
+        """Получить последние отзывы"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT user_id, username, feedback_type, message, photo_file_id, 
+                       context_data, status, created_at
+                FROM feedback
+                ORDER BY created_at DESC
+                LIMIT $1
+            """, limit)
+            
+            return [dict(row) for row in rows]
     
     # === МЕТОДЫ ДЛЯ ВЫРАЩИВАНИЯ РАСТЕНИЙ ===
     
@@ -757,7 +819,7 @@ class PlantDatabase:
                 return []
     
     async def get_user_stats(self, user_id: int) -> Dict:
-        """Статистика пользователя включая выращивание"""
+        """Статистика пользователя включая выращивание и обратную связь"""
         async with self.pool.acquire() as conn:
             # Статистика обычных растений
             regular_stats = await conn.fetchrow("""
@@ -782,6 +844,14 @@ class PlantDatabase:
                 WHERE user_id = $1
             """, user_id)
             
+            # Статистика обратной связи
+            feedback_stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_feedback
+                FROM feedback 
+                WHERE user_id = $1
+            """, user_id)
+            
             return {
                 'total_plants': regular_stats['total_plants'] or 0,
                 'watered_plants': regular_stats['watered_plants'] or 0,
@@ -791,7 +861,8 @@ class PlantDatabase:
                 'last_watered_date': regular_stats['last_watered_date'],
                 'total_growing': growing_stats['total_growing'] or 0,
                 'active_growing': growing_stats['active_growing'] or 0,
-                'completed_growing': growing_stats['completed_growing'] or 0
+                'completed_growing': growing_stats['completed_growing'] or 0,
+                'total_feedback': feedback_stats['total_feedback'] or 0
             }
     
     async def close(self):
