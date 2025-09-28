@@ -104,7 +104,6 @@ class PlantStates(StatesGroup):
 class FeedbackStates(StatesGroup):
     choosing_type = State()
     writing_message = State()
-    adding_photo = State()
 
 # Функция для получения текущего московского времени
 def get_moscow_now():
@@ -1557,19 +1556,19 @@ async def feedback_type_callback(callback: types.CallbackQuery, state: FSMContex
     type_messages = {
         "bug": {
             "title": "🐛 Сообщить о баге",
-            "description": "Опишите техническую проблему:\n• Что произошло?\n• Какие действия привели к ошибке?\n• Какой результат ожидали?"
+            "description": "Опишите техническую проблему:\n• Что произошло?\n• Какие действия привели к ошибке?\n• Какой результат ожидали?\n\n✍️ Напишите ваше сообщение в чат и приложите фото, если есть:"
         },
         "analysis_error": {
             "title": "❌ Неточный анализ",
-            "description": "Расскажите о неправильном определении растения:\n• Какое растение на самом деле?\n• Что бот определил неверно?\n• Можете приложить фото для примера"
+            "description": "Расскажите о неправильном определении растения:\n• Какое растение на самом деле?\n• Что бот определил неверно?\n• Можете приложить фото для примера\n\n✍️ Напишите ваше сообщение в чат и приложите фото, если есть:"
         },
         "suggestion": {
             "title": "💡 Предложить улучшение",
-            "description": "Поделитесь идеей по улучшению бота:\n• Какую функцию хотели бы добавить?\n• Что можно сделать лучше?\n• Как это поможет пользователям?"
+            "description": "Поделитесь идеей по улучшению бота:\n• Какую функцию хотели бы добавить?\n• Что можно сделать лучше?\n• Как это поможет пользователям?\n\n✍️ Напишите ваше сообщение в чат и приложите фото, если есть:"
         },
         "review": {
             "title": "⭐ Общий отзыв",
-            "description": "Поделитесь впечатлениями от использования:\n• Что нравится?\n• Что не нравится?\n• Общая оценка работы бота"
+            "description": "Поделитесь впечатлениями от использования:\n• Что нравится?\n• Что не нравится?\n• Общая оценка работы бота\n\n✍️ Напишите ваше сообщение в чат и приложите фото, если есть:"
         }
     }
     
@@ -1580,107 +1579,65 @@ async def feedback_type_callback(callback: types.CallbackQuery, state: FSMContex
     
     await callback.message.answer(
         f"{type_info['title']}\n\n"
-        f"{type_info['description']}\n\n"
-        f"✍️ Напишите ваше сообщение:",
+        f"{type_info['description']}",
         parse_mode="HTML"
     )
     await callback.answer()
 
 @dp.message(StateFilter(FeedbackStates.writing_message))
 async def handle_feedback_message(message: types.Message, state: FSMContext):
-    """Обработка текста обратной связи"""
+    """Обработка сообщения обратной связи"""
     try:
-        feedback_text = message.text.strip()
+        # Получаем текст сообщения
+        feedback_text = message.text.strip() if message.text else ""
         
-        if len(feedback_text) < 10:
+        # Получаем фото если есть
+        feedback_photo = None
+        if message.photo:
+            feedback_photo = message.photo[-1].file_id
+        
+        # Если нет ни текста ни фото
+        if not feedback_text and not feedback_photo:
             await message.reply(
-                "📝 <b>Сообщение слишком короткое</b>\n\n"
-                "Пожалуйста, опишите подробнее (минимум 10 символов):",
+                "📝 <b>Пожалуйста, напишите сообщение или приложите фото</b>\n\n"
+                "Ваш отзыв поможет улучшить бота!",
                 parse_mode="HTML"
             )
             return
         
-        if len(feedback_text) > 2000:
-            await message.reply(
-                "📝 <b>Сообщение слишком длинное</b>\n\n"
-                "Максимум 2000 символов. Сократите текст:",
-                parse_mode="HTML"
-            )
-            return
+        # Проверяем длину текста если он есть
+        if feedback_text:
+            if len(feedback_text) < 5:
+                await message.reply(
+                    "📝 <b>Сообщение слишком короткое</b>\n\n"
+                    "Пожалуйста, опишите подробнее (минимум 5 символов):",
+                    parse_mode="HTML"
+                )
+                return
+            
+            if len(feedback_text) > 2000:
+                await message.reply(
+                    "📝 <b>Сообщение слишком длинное</b>\n\n"
+                    "Максимум 2000 символов. Сократите текст:",
+                    parse_mode="HTML"
+                )
+                return
         
-        await state.update_data(feedback_message=feedback_text)
+        # Если только фото без текста
+        if not feedback_text and feedback_photo:
+            feedback_text = "Фото без комментария"
         
-        # Предлагаем добавить фото
-        keyboard = [
-            [InlineKeyboardButton(text="📸 Добавить фото", callback_data="feedback_add_photo")],
-            [InlineKeyboardButton(text="📤 Отправить без фото", callback_data="feedback_send_without_photo")],
-            [InlineKeyboardButton(text="❌ Отменить", callback_data="feedback_cancel")],
-        ]
+        # Получаем тип обратной связи из состояния
+        data = await state.get_data()
+        feedback_type = data.get('feedback_type', 'review')
         
-        await message.reply(
-            "✅ <b>Сообщение принято!</b>\n\n"
-            "📸 Хотите добавить фото к обратной связи?\n"
-            "(Особенно полезно для багов и неточного анализа)",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-        )
+        # Отправляем обратную связь
+        await send_feedback(message, state, feedback_text, feedback_photo)
         
     except Exception as e:
         print(f"Ошибка обработки сообщения обратной связи: {e}")
         await message.reply("❌ Ошибка обработки сообщения. Попробуйте еще раз.")
         await state.clear()
-
-@dp.callback_query(F.data == "feedback_add_photo")
-async def feedback_add_photo_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Запрос фото для обратной связи"""
-    await callback.message.answer(
-        "📸 <b>Добавление фото</b>\n\n"
-        "Пришлите фото, которое поможет понять проблему или предложение:\n\n"
-        "💡 <b>Например:</b>\n"
-        "• Скриншот ошибки\n"
-        "• Фото неправильно определенного растения\n"
-        "• Изображение для иллюстрации идеи",
-        parse_mode="HTML"
-    )
-    
-    await state.set_state(FeedbackStates.adding_photo)
-    await callback.answer()
-
-@dp.message(StateFilter(FeedbackStates.adding_photo), F.photo)
-async def handle_feedback_photo(message: types.Message, state: FSMContext):
-    """Обработка фото обратной связи"""
-    try:
-        photo = message.photo[-1]
-        
-        await state.update_data(feedback_photo=photo.file_id)
-        
-        # Отправляем обратную связь
-        await send_feedback(message, state)
-        
-    except Exception as e:
-        print(f"Ошибка обработки фото обратной связи: {e}")
-        await message.reply("❌ Ошибка обработки фото. Попробуйте еще раз.")
-
-@dp.message(StateFilter(FeedbackStates.adding_photo))
-async def handle_feedback_no_photo(message: types.Message, state: FSMContext):
-    """Обработка текста вместо фото при добавлении фото к обратной связи"""
-    if message.photo:
-        # Если все-таки прислали фото, обрабатываем как фото
-        await handle_feedback_photo(message, state)
-    else:
-        # Если прислали текст, отправляем без фото
-        await message.reply(
-            "📝 <b>Текст получен</b>\n\n"
-            "Отправляю обратную связь без дополнительного фото.",
-            parse_mode="HTML"
-        )
-        await send_feedback(message, state)
-
-@dp.callback_query(F.data == "feedback_send_without_photo")
-async def feedback_send_without_photo_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Отправка обратной связи без фото"""
-    await send_feedback(callback.message, state)
-    await callback.answer()
 
 @dp.callback_query(F.data == "feedback_cancel")
 async def feedback_cancel_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -1695,13 +1652,11 @@ async def feedback_cancel_callback(callback: types.CallbackQuery, state: FSMCont
     )
     await callback.answer()
 
-async def send_feedback(message_obj, state: FSMContext):
+async def send_feedback(message_obj, state: FSMContext, feedback_message: str, feedback_photo: str = None):
     """Отправка обратной связи в БД и уведомление"""
     try:
         data = await state.get_data()
         feedback_type = data.get('feedback_type', 'review')
-        feedback_message = data.get('feedback_message', '')
-        feedback_photo = data.get('feedback_photo')
         
         user_id = message_obj.from_user.id
         username = message_obj.from_user.username or message_obj.from_user.first_name or f"user_{user_id}"
@@ -1746,20 +1701,9 @@ async def send_feedback(message_obj, state: FSMContext):
         print("=" * 50)
         
         # Благодарим пользователя
-        type_thanks = {
-            "bug": "Спасибо за сообщение о баге! Мы исправим проблему.",
-            "analysis_error": "Спасибо за информацию! Это поможет улучшить точность анализа.",
-            "suggestion": "Отличная идея! Рассмотрим возможность добавления.",
-            "review": "Спасибо за отзыв! Ваше мнение очень важно."
-        }
-        
-        thanks_message = type_thanks.get(feedback_type, "Спасибо за обратную связь!")
-        
         await message_obj.answer(
-            f"✅ <b>Обратная связь отправлена!</b>\n\n"
-            f"{thanks_message}\n\n"
-            f"🆔 Номер обращения: #{feedback_id}\n"
-            f"📧 Мы рассмотрим ваше сообщение и при необходимости свяжемся с вами.",
+            f"✅ <b>Спасибо за ваш отзыв!</b>\n\n"
+            f"Ваше сообщение принято и поможет улучшить бота.",
             parse_mode="HTML",
             reply_markup=main_menu()
         )
@@ -2219,128 +2163,6 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None, retr
         "source": "fallback_improved",
         "needs_retry": True
     }
-
-def format_plant_analysis(raw_text: str, confidence: float = None) -> str:
-    """Форматирование детального анализа растения с честным подходом"""
-    
-    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-    formatted = ""
-    
-    # Парсим структурированный ответ
-    plant_name = "Неизвестное растение"
-    confidence_level = confidence or 0
-    
-    for line in lines:
-        if line.startswith("РАСТЕНИЕ:"):
-            plant_name = line.replace("РАСТЕНИЕ:", "").strip()
-            # Убираем лишнюю информацию в скобках для заголовка
-            display_name = plant_name.split("(")[0].strip()
-            formatted += f"🌿 <b>{display_name}</b>\n"
-            if "(" in plant_name:
-                latin_name = plant_name[plant_name.find("(")+1:plant_name.find(")")]
-                formatted += f"🏷️ <i>{latin_name}</i>\n"
-            
-        elif line.startswith("УВЕРЕННОСТЬ:"):
-            conf = line.replace("УВЕРЕННОСТЬ:", "").strip()
-            try:
-                confidence_level = float(conf.replace("%", ""))
-                if confidence_level >= 80:
-                    conf_icon = "🎯"
-                elif confidence_level >= 60:
-                    conf_icon = "🎪"
-                else:
-                    conf_icon = "🤔"
-                formatted += f"{conf_icon} <b>Уверенность:</b> {conf}\n\n"
-            except:
-                formatted += f"🎪 <b>Уверенность:</b> {conf}\n\n"
-                
-        elif line.startswith("ПРИЗНАКИ:"):
-            signs = line.replace("ПРИЗНАКИ:", "").strip()
-            formatted += f"🔍 <b>Признаки:</b> {signs}\n"
-            
-        elif line.startswith("СЕМЕЙСТВО:"):
-            family = line.replace("СЕМЕЙСТВО:", "").strip()
-            formatted += f"👨‍👩‍👧‍👦 <b>Семейство:</b> {family}\n"
-            
-        elif line.startswith("РОДИНА:"):
-            origin = line.replace("РОДИНА:", "").strip()
-            formatted += f"🌍 <b>Родина:</b> {origin}\n\n"
-            
-        elif line.startswith("СОСТОЯНИЕ:"):
-            condition = line.replace("СОСТОЯНИЕ:", "").strip()
-            if any(word in condition.lower() for word in ["здоров", "хорош", "отличн", "норм"]):
-                icon = "✅"
-            elif any(word in condition.lower() for word in ["проблем", "болен", "плох", "стресс"]):
-                icon = "⚠️"
-            else:
-                icon = "ℹ️"
-            formatted += f"{icon} <b>Состояние:</b> {condition}\n"
-            
-        elif line.startswith("ПОЛИВ_АНАЛИЗ:"):
-            watering_analysis = line.replace("ПОЛИВ_АНАЛИЗ:", "").strip()
-            if "не видна" in watering_analysis.lower() or "невозможно оценить" in watering_analysis.lower():
-                icon = "❓"
-                formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
-            elif any(word in watering_analysis.lower() for word in ["переувлажн", "перелив"]):
-                icon = "🔴"
-                formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
-            elif any(word in watering_analysis.lower() for word in ["недополит", "пересушен"]):
-                icon = "🟡"
-                formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
-            else:
-                icon = "🟢"
-                formatted += f"{icon} <b>Анализ полива:</b> {watering_analysis}\n"
-            
-        elif line.startswith("ПОЛИВ_РЕКОМЕНДАЦИИ:"):
-            watering_rec = line.replace("ПОЛИВ_РЕКОМЕНДАЦИИ:", "").strip()
-            if "проверьте влажность" in watering_rec.lower() or "почва не видна" in watering_rec.lower():
-                formatted += f"💧 <b>Рекомендации по поливу:</b> {watering_rec}\n"
-            else:
-                formatted += f"💧 <b>Персональные рекомендации по поливу:</b> {watering_rec}\n"
-            
-        elif line.startswith("ПОЛИВ_ИНТЕРВАЛ:"):
-            interval = line.replace("ПОЛИВ_ИНТЕРВАЛ:", "").strip()
-            formatted += f"⏰ <b>Рекомендуемый интервал:</b> {interval} дней\n\n"
-            
-        elif line.startswith("СВЕТ:"):
-            light = line.replace("СВЕТ:", "").strip()
-            formatted += f"☀️ <b>Освещение:</b> {light}\n"
-            
-        elif line.startswith("ТЕМПЕРАТУРА:"):
-            temp = line.replace("ТЕМПЕРАТУРА:", "").strip()
-            formatted += f"🌡️ <b>Температура:</b> {temp}\n"
-            
-        elif line.startswith("ВЛАЖНОСТЬ:"):
-            humidity = line.replace("ВЛАЖНОСТЬ:", "").strip()
-            formatted += f"💨 <b>Влажность:</b> {humidity}\n"
-            
-        elif line.startswith("ПОДКОРМКА:"):
-            feeding = line.replace("ПОДКОРМКА:", "").strip()
-            formatted += f"🍽️ <b>Подкормка:</b> {feeding}\n"
-            
-        elif line.startswith("ПЕРЕСАДКА:"):
-            repot = line.replace("ПЕРЕСАДКА:", "").strip()
-            formatted += f"🪴 <b>Пересадка:</b> {repot}\n"
-            
-        elif line.startswith("ПРОБЛЕМЫ:"):
-            problems = line.replace("ПРОБЛЕМЫ:", "").strip()
-            formatted += f"\n⚠️ <b>Возможные проблемы:</b> {problems}\n"
-            
-        elif line.startswith("СОВЕТ:"):
-            advice = line.replace("СОВЕТ:", "").strip()
-            formatted += f"\n💡 <b>Персональный совет:</b> {advice}"
-    
-    # Добавляем индикатор качества распознавания
-    if confidence_level >= 80:
-        formatted += "\n\n🏆 <i>Высокая точность распознавания</i>"
-    elif confidence_level >= 60:
-        formatted += "\n\n👍 <i>Хорошее распознавание</i>"
-    else:
-        formatted += "\n\n🤔 <i>Требуется дополнительная идентификация</i>"
-    
-    formatted += "\n💾 <i>Сохраните для персональных напоминаний!</i>"
-    
-    return formatted
 
 # === ОБРАБОТЧИКИ КОМАНД ===
 
