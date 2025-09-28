@@ -102,7 +102,9 @@ class PlantStates(StatesGroup):
 
 # Состояния для обратной связи
 class FeedbackStates(StatesGroup):
+    choosing_type = State()
     writing_message = State()
+    adding_photo = State()
 
 # Функция для получения текущего московского времени
 def get_moscow_now():
@@ -161,9 +163,7 @@ async def check_and_send_reminders():
         # Напоминания по этапам выращивания
         await check_and_send_growing_reminders()
                 
-        print(f"❌ Критическая ошибка: {e}")
-    except KeyboardInterrupt:
-        print("🛑 Принудительная остановка")
+    except Exception as e:
         print(f"Ошибка проверки напоминаний: {e}")
 
 async def check_and_send_growing_reminders():
@@ -1557,19 +1557,19 @@ async def feedback_type_callback(callback: types.CallbackQuery, state: FSMContex
     type_messages = {
         "bug": {
             "title": "🐛 Сообщить о баге",
-            "description": "Опишите техническую проблему:\n• Что произошло?\n• Какие действия привели к ошибке?\n• Какой результат ожидали?\n\n✍️ Напишите ваше сообщение ниже и приложите фото (скриншот ошибки), если есть"
+            "description": "Опишите техническую проблему:\n• Что произошло?\n• Какие действия привели к ошибке?\n• Какой результат ожидали?"
         },
         "analysis_error": {
             "title": "❌ Неточный анализ",
-            "description": "Расскажите о неправильном определении растения:\n• Какое растение на самом деле?\n• Что бот определил неверно?\n• Какие признаки были указаны неточно?\n\n✍️ Напишите ваше сообщение ниже и приложите фото растения для примера, если есть"
+            "description": "Расскажите о неправильном определении растения:\n• Какое растение на самом деле?\n• Что бот определил неверно?\n• Можете приложить фото для примера"
         },
         "suggestion": {
             "title": "💡 Предложить улучшение",
-            "description": "Поделитесь идеей по улучшению бота:\n• Какую функцию хотели бы добавить?\n• Что можно сделать лучше?\n• Как это поможет пользователям?\n\n✍️ Напишите ваше сообщение ниже и приложите фото для иллюстрации идеи, если есть"
+            "description": "Поделитесь идеей по улучшению бота:\n• Какую функцию хотели бы добавить?\n• Что можно сделать лучше?\n• Как это поможет пользователям?"
         },
         "review": {
             "title": "⭐ Общий отзыв",
-            "description": "Поделитесь впечатлениями от использования:\n• Что нравится?\n• Что не нравится?\n• Общая оценка работы бота\n\n✍️ Напишите ваше сообщение ниже и приложите фото, если есть"
+            "description": "Поделитесь впечатлениями от использования:\n• Что нравится?\n• Что не нравится?\n• Общая оценка работы бота"
         }
     }
     
@@ -1580,27 +1580,19 @@ async def feedback_type_callback(callback: types.CallbackQuery, state: FSMContex
     
     await callback.message.answer(
         f"{type_info['title']}\n\n"
-        f"{type_info['description']}",
+        f"{type_info['description']}\n\n"
+        f"✍️ Напишите ваше сообщение:",
         parse_mode="HTML"
     )
     await callback.answer()
 
 @dp.message(StateFilter(FeedbackStates.writing_message))
 async def handle_feedback_message(message: types.Message, state: FSMContext):
-    """Обработка обратной связи (текст и/или фото)"""
+    """Обработка текста обратной связи"""
     try:
-        data = await state.get_data()
-        feedback_type = data.get('feedback_type', 'review')
+        feedback_text = message.text.strip()
         
-        # Получаем текст и фото
-        feedback_text = message.text or message.caption or ""
-        photo_file_id = None
-        
-        if message.photo:
-            photo_file_id = message.photo[-1].file_id
-        
-        # Валидация
-        if len(feedback_text.strip()) < 10:
+        if len(feedback_text) < 10:
             await message.reply(
                 "📝 <b>Сообщение слишком короткое</b>\n\n"
                 "Пожалуйста, опишите подробнее (минимум 10 символов):",
@@ -1616,19 +1608,100 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
             )
             return
         
-        # Отправляем обратную связь
-        await send_feedback(message, state, feedback_text, photo_file_id)
+        await state.update_data(feedback_message=feedback_text)
+        
+        # Предлагаем добавить фото
+        keyboard = [
+            [InlineKeyboardButton(text="📸 Добавить фото", callback_data="feedback_add_photo")],
+            [InlineKeyboardButton(text="📤 Отправить без фото", callback_data="feedback_send_without_photo")],
+            [InlineKeyboardButton(text="❌ Отменить", callback_data="feedback_cancel")],
+        ]
+        
+        await message.reply(
+            "✅ <b>Сообщение принято!</b>\n\n"
+            "📸 Хотите добавить фото к обратной связи?\n"
+            "(Особенно полезно для багов и неточного анализа)",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
         
     except Exception as e:
         print(f"Ошибка обработки сообщения обратной связи: {e}")
         await message.reply("❌ Ошибка обработки сообщения. Попробуйте еще раз.")
         await state.clear()
 
-async def send_feedback(message_obj, state: FSMContext, feedback_text: str, photo_file_id: str = None):
+@dp.callback_query(F.data == "feedback_add_photo")
+async def feedback_add_photo_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Запрос фото для обратной связи"""
+    await callback.message.answer(
+        "📸 <b>Добавление фото</b>\n\n"
+        "Пришлите фото, которое поможет понять проблему или предложение:\n\n"
+        "💡 <b>Например:</b>\n"
+        "• Скриншот ошибки\n"
+        "• Фото неправильно определенного растения\n"
+        "• Изображение для иллюстрации идеи",
+        parse_mode="HTML"
+    )
+    
+    await state.set_state(FeedbackStates.adding_photo)
+    await callback.answer()
+
+@dp.message(StateFilter(FeedbackStates.adding_photo), F.photo)
+async def handle_feedback_photo(message: types.Message, state: FSMContext):
+    """Обработка фото обратной связи"""
+    try:
+        photo = message.photo[-1]
+        
+        await state.update_data(feedback_photo=photo.file_id)
+        
+        # Отправляем обратную связь
+        await send_feedback(message, state)
+        
+    except Exception as e:
+        print(f"Ошибка обработки фото обратной связи: {e}")
+        await message.reply("❌ Ошибка обработки фото. Попробуйте еще раз.")
+
+@dp.message(StateFilter(FeedbackStates.adding_photo))
+async def handle_feedback_no_photo(message: types.Message, state: FSMContext):
+    """Обработка текста вместо фото при добавлении фото к обратной связи"""
+    if message.photo:
+        # Если все-таки прислали фото, обрабатываем как фото
+        await handle_feedback_photo(message, state)
+    else:
+        # Если прислали текст, отправляем без фото
+        await message.reply(
+            "📝 <b>Текст получен</b>\n\n"
+            "Отправляю обратную связь без дополнительного фото.",
+            parse_mode="HTML"
+        )
+        await send_feedback(message, state)
+
+@dp.callback_query(F.data == "feedback_send_without_photo")
+async def feedback_send_without_photo_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Отправка обратной связи без фото"""
+    await send_feedback(callback.message, state)
+    await callback.answer()
+
+@dp.callback_query(F.data == "feedback_cancel")
+async def feedback_cancel_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена обратной связи"""
+    await state.clear()
+    
+    await callback.message.answer(
+        "❌ <b>Обратная связь отменена</b>\n\n"
+        "Вы можете отправить ее в любое время через главное меню.",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
+
+async def send_feedback(message_obj, state: FSMContext):
     """Отправка обратной связи в БД и уведомление"""
     try:
         data = await state.get_data()
         feedback_type = data.get('feedback_type', 'review')
+        feedback_message = data.get('feedback_message', '')
+        feedback_photo = data.get('feedback_photo')
         
         user_id = message_obj.from_user.id
         username = message_obj.from_user.username or message_obj.from_user.first_name or f"user_{user_id}"
@@ -1648,8 +1721,8 @@ async def send_feedback(message_obj, state: FSMContext, feedback_text: str, phot
             user_id=user_id,
             username=username,
             feedback_type=feedback_type,
-            message=feedback_text,
-            photo_file_id=photo_file_id,
+            message=feedback_message,
+            photo_file_id=feedback_photo,
             context_data=context_data
         )
         
@@ -1665,9 +1738,9 @@ async def send_feedback(message_obj, state: FSMContext, feedback_text: str, phot
         print(f"\n{icon} НОВАЯ ОБРАТНАЯ СВЯЗЬ #{feedback_id}")
         print(f"👤 Пользователь: @{username} (ID: {user_id})")
         print(f"📝 Тип: {feedback_type}")
-        print(f"💬 Сообщение: {feedback_text[:100]}{'...' if len(feedback_text) > 100 else ''}")
-        if photo_file_id:
-            print(f"📸 Фото: {photo_file_id}")
+        print(f"💬 Сообщение: {feedback_message[:100]}{'...' if len(feedback_message) > 100 else ''}")
+        if feedback_photo:
+            print(f"📸 Фото: {feedback_photo}")
         if context_data:
             print(f"🔗 Контекст: {context_data}")
         print("=" * 50)
@@ -3459,3 +3532,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+    except KeyboardInterrupt:
+        print("🛑 Принудительная остановка")
