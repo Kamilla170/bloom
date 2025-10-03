@@ -32,8 +32,7 @@ class PlantDatabase:
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
                     first_name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    onboarding_completed BOOLEAN DEFAULT FALSE
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
@@ -187,7 +186,6 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS stage_number INTEGER")
                 await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS task_day INTEGER")
                 await conn.execute("ALTER TABLE growing_plants ADD COLUMN IF NOT EXISTS task_calendar JSONB")
-                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE")
             except Exception as e:
                 print(f"Колонки уже существуют или ошибка: {e}")
             
@@ -213,13 +211,16 @@ class PlantDatabase:
             if line.startswith("РАСТЕНИЕ:"):
                 plant_name = line.replace("РАСТЕНИЕ:", "").strip()
                 
+                # Убираем латинское название в скобках для отображения
                 if "(" in plant_name:
                     plant_name = plant_name.split("(")[0].strip()
                 
+                # Убираем информацию о достоверности и проценты
                 plant_name = plant_name.split("достоверность:")[0].strip()
                 plant_name = plant_name.split("%")[0].strip()
                 plant_name = plant_name.replace("🌿", "").strip()
                 
+                # Проверяем длину и разумность названия
                 if 3 <= len(plant_name) <= 80 and not plant_name.lower().startswith(("неизвестн", "неопознан", "комнатное растение")):
                     return plant_name
         
@@ -237,6 +238,7 @@ class PlantDatabase:
                     first_name = EXCLUDED.first_name
             """, user_id, username, first_name)
             
+            # Создаем настройки пользователя по умолчанию
             await conn.execute("""
                 INSERT INTO user_settings (user_id)
                 VALUES ($1)
@@ -293,8 +295,10 @@ class PlantDatabase:
                                  photo_file_id: str = None) -> int:
         """Создать новое выращиваемое растение с календарём задач"""
         async with self.pool.acquire() as conn:
+            # Преобразуем календарь в JSON если передан
             calendar_json = json.dumps(task_calendar) if task_calendar else None
             
+            # Создаем запись о выращивании
             growing_id = await conn.fetchval("""
                 INSERT INTO growing_plants 
                 (user_id, plant_name, growth_method, growing_plan, task_calendar, photo_file_id, estimated_completion)
@@ -303,8 +307,10 @@ class PlantDatabase:
             """, user_id, plant_name, growth_method, growing_plan, calendar_json, photo_file_id, 
                 datetime.now().date() + timedelta(days=90))
             
+            # Создаем этапы выращивания из плана
             await self.create_growth_stages(growing_id, growing_plan)
             
+            # Добавляем запись в дневник роста
             await conn.execute("""
                 INSERT INTO growth_diary (growing_plant_id, user_id, entry_type, description)
                 VALUES ($1, $2, 'started', $3)
@@ -329,12 +335,15 @@ class PlantDatabase:
             started_date = row['started_date']
             days_since_start = (datetime.now().date() - started_date.date()).days
             
+            # Ищем ближайшую задачу для текущего этапа
             stage_key = f"stage_{current_stage + 1}"
             if stage_key in calendar and 'tasks' in calendar[stage_key]:
                 tasks = calendar[stage_key]['tasks']
                 
+                # Сортируем задачи по дню
                 sorted_tasks = sorted(tasks, key=lambda x: x.get('day', 0))
                 
+                # Ищем первую невыполненную задачу
                 for task in sorted_tasks:
                     task_day = task.get('day', 0)
                     if task_day >= days_since_start:
@@ -875,6 +884,7 @@ class PlantDatabase:
         if self.pool:
             await self.pool.close()
 
+# Глобальный экземпляр базы данных
 db = None
 
 async def init_database():
