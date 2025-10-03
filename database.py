@@ -32,7 +32,8 @@ class PlantDatabase:
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
                     first_name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    onboarding_completed BOOLEAN DEFAULT FALSE
                 )
             """)
             
@@ -69,7 +70,7 @@ class PlantDatabase:
                 )
             """)
             
-            # НОВАЯ ТАБЛИЦА: Выращиваемые растения
+            # Таблица выращиваемых растений с календарём задач
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS growing_plants (
                     id SERIAL PRIMARY KEY,
@@ -77,6 +78,7 @@ class PlantDatabase:
                     plant_name TEXT NOT NULL,
                     growth_method TEXT NOT NULL,
                     growing_plan TEXT NOT NULL,
+                    task_calendar JSONB,
                     current_stage INTEGER DEFAULT 0,
                     total_stages INTEGER DEFAULT 4,
                     started_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -88,7 +90,7 @@ class PlantDatabase:
                 )
             """)
             
-            # НОВАЯ ТАБЛИЦА: Этапы выращивания
+            # Таблица этапов выращивания
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS growth_stages (
                     id SERIAL PRIMARY KEY,
@@ -105,7 +107,7 @@ class PlantDatabase:
                 )
             """)
             
-            # НОВАЯ ТАБЛИЦА: Дневник роста
+            # Таблица дневника роста
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS growth_diary (
                     id SERIAL PRIMARY KEY,
@@ -147,13 +149,14 @@ class PlantDatabase:
                     last_sent TIMESTAMP,
                     send_count INTEGER DEFAULT 0,
                     stage_number INTEGER,
+                    task_day INTEGER,
                     FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
                     FOREIGN KEY (plant_id) REFERENCES plants (id) ON DELETE CASCADE,
                     FOREIGN KEY (growing_plant_id) REFERENCES growing_plants (id) ON DELETE CASCADE
                 )
             """)
             
-            # НОВАЯ ТАБЛИЦА: Обратная связь
+            # Таблица обратной связи
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS feedback (
                     id SERIAL PRIMARY KEY,
@@ -182,6 +185,9 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS send_count INTEGER DEFAULT 0")
                 await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS growing_plant_id INTEGER")
                 await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS stage_number INTEGER")
+                await conn.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS task_day INTEGER")
+                await conn.execute("ALTER TABLE growing_plants ADD COLUMN IF NOT EXISTS task_calendar JSONB")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE")
             except Exception as e:
                 print(f"Колонки уже существуют или ошибка: {e}")
             
@@ -207,16 +213,13 @@ class PlantDatabase:
             if line.startswith("РАСТЕНИЕ:"):
                 plant_name = line.replace("РАСТЕНИЕ:", "").strip()
                 
-                # Убираем латинское название в скобках для отображения
                 if "(" in plant_name:
                     plant_name = plant_name.split("(")[0].strip()
                 
-                # Убираем информацию о достоверности и проценты
                 plant_name = plant_name.split("достоверность:")[0].strip()
                 plant_name = plant_name.split("%")[0].strip()
                 plant_name = plant_name.replace("🌿", "").strip()
                 
-                # Проверяем длину и разумность названия
                 if 3 <= len(plant_name) <= 80 and not plant_name.lower().startswith(("неизвестн", "неопознан", "комнатное растение")):
                     return plant_name
         
@@ -234,7 +237,6 @@ class PlantDatabase:
                     first_name = EXCLUDED.first_name
             """, user_id, username, first_name)
             
-            # Создаем настройки пользователя по умолчанию
             await conn.execute("""
                 INSERT INTO user_settings (user_id)
                 VALUES ($1)
@@ -287,22 +289,22 @@ class PlantDatabase:
     # === МЕТОДЫ ДЛЯ ВЫРАЩИВАНИЯ РАСТЕНИЙ ===
     
     async def create_growing_plant(self, user_id: int, plant_name: str, growth_method: str, 
-                                 growing_plan: str, photo_file_id: str = None) -> int:
-        """Создать новое выращиваемое растение"""
+                                 growing_plan: str, task_calendar: dict = None, 
+                                 photo_file_id: str = None) -> int:
+        """Создать новое выращиваемое растение с календарём задач"""
         async with self.pool.acquire() as conn:
-            # Создаем запись о выращивании
+            calendar_json = json.dumps(task_calendar) if task_calendar else None
+            
             growing_id = await conn.fetchval("""
                 INSERT INTO growing_plants 
-                (user_id, plant_name, growth_method, growing_plan, photo_file_id, estimated_completion)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                (user_id, plant_name, growth_method, growing_plan, task_calendar, photo_file_id, estimated_completion)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING id
-            """, user_id, plant_name, growth_method, growing_plan, photo_file_id, 
-                datetime.now().date() + timedelta(days=90))  # 3 месяца по умолчанию
+            """, user_id, plant_name, growth_method, growing_plan, calendar_json, photo_file_id, 
+                datetime.now().date() + timedelta(days=90))
             
-            # Создаем этапы выращивания из плана
             await self.create_growth_stages(growing_id, growing_plan)
             
-            # Добавляем запись в дневник роста
             await conn.execute("""
                 INSERT INTO growth_diary (growing_plant_id, user_id, entry_type, description)
                 VALUES ($1, $2, 'started', $3)
@@ -310,9 +312,42 @@ class PlantDatabase:
             
             return growing_id
     
+    async def get_next_task_for_growing_plant(self, growing_id: int) -> Optional[Dict]:
+        """Получить следующую задачу для выращиваемого растения"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT task_calendar, current_stage, started_date
+                FROM growing_plants
+                WHERE id = $1
+            """, growing_id)
+            
+            if not row or not row['task_calendar']:
+                return None
+            
+            calendar = row['task_calendar']
+            current_stage = row['current_stage']
+            started_date = row['started_date']
+            days_since_start = (datetime.now().date() - started_date.date()).days
+            
+            stage_key = f"stage_{current_stage + 1}"
+            if stage_key in calendar and 'tasks' in calendar[stage_key]:
+                tasks = calendar[stage_key]['tasks']
+                
+                sorted_tasks = sorted(tasks, key=lambda x: x.get('day', 0))
+                
+                for task in sorted_tasks:
+                    task_day = task.get('day', 0)
+                    if task_day >= days_since_start:
+                        return {
+                            'task': task,
+                            'day': task_day,
+                            'stage': current_stage + 1
+                        }
+            
+            return None
+    
     async def create_growth_stages(self, growing_plant_id: int, growing_plan: str):
         """Создать этапы выращивания из плана"""
-        # Парсим план и создаем этапы
         stages = self.parse_growing_plan_to_stages(growing_plan)
         
         async with self.pool.acquire() as conn:
@@ -335,15 +370,12 @@ class PlantDatabase:
                 if current_stage:
                     stages.append(current_stage)
                 
-                # Извлекаем номер этапа и название
                 stage_info = line.split(':', 1)
                 if len(stage_info) > 1:
                     stage_name = stage_info[1].strip()
-                    # Извлекаем продолжительность из скобок
-                    duration = 7  # по умолчанию
+                    duration = 7
                     if '(' in stage_name and ')' in stage_name:
                         duration_text = stage_name[stage_name.find('(')+1:stage_name.find(')')]
-                        # Ищем числа в тексте продолжительности
                         import re
                         numbers = re.findall(r'\d+', duration_text)
                         if numbers:
@@ -361,7 +393,6 @@ class PlantDatabase:
         if current_stage:
             stages.append(current_stage)
         
-        # Если не удалось распарсить, создаем стандартные этапы
         if not stages:
             stages = [
                 {'name': 'Подготовка и посадка', 'description': 'Подготовка семян/черенка и посадка', 'duration': 7},
@@ -409,7 +440,6 @@ class PlantDatabase:
     async def advance_growth_stage(self, growing_id: int, photo_file_id: str = None, notes: str = None):
         """Перевести растение на следующий этап"""
         async with self.pool.acquire() as conn:
-            # Получаем текущую информацию
             growing_plant = await conn.fetchrow("""
                 SELECT current_stage, total_stages FROM growing_plants WHERE id = $1
             """, growing_id)
@@ -420,7 +450,6 @@ class PlantDatabase:
             current_stage = growing_plant['current_stage']
             total_stages = growing_plant['total_stages']
             
-            # Отмечаем текущий этап как завершенный
             if current_stage > 0:
                 await conn.execute("""
                     UPDATE growth_stages 
@@ -428,7 +457,6 @@ class PlantDatabase:
                     WHERE growing_plant_id = $3 AND stage_number = $4
                 """, photo_file_id, notes, growing_id, current_stage)
             
-            # Переводим на следующий этап
             new_stage = current_stage + 1
             if new_stage <= total_stages:
                 await conn.execute("""
@@ -437,7 +465,6 @@ class PlantDatabase:
                     WHERE id = $2
                 """, new_stage, growing_id)
                 
-                # Добавляем запись в дневник
                 await conn.execute("""
                     INSERT INTO growth_diary (growing_plant_id, user_id, entry_type, description, photo_file_id, stage_number)
                     SELECT $1, user_id, 'stage_completed', $2, $3, $4
@@ -446,7 +473,6 @@ class PlantDatabase:
                 
                 return True
             else:
-                # Растение выращено полностью
                 await self.complete_growing_plant(growing_id)
                 return "completed"
     
@@ -459,7 +485,6 @@ class PlantDatabase:
                 WHERE id = $1
             """, growing_id)
             
-            # Добавляем финальную запись в дневник
             await conn.execute("""
                 INSERT INTO growth_diary (growing_plant_id, user_id, entry_type, description)
                 SELECT $1, user_id, 'completed', 'Выращивание успешно завершено!'
@@ -490,29 +515,26 @@ class PlantDatabase:
             return [dict(row) for row in rows]
     
     async def create_growing_reminder(self, growing_id: int, user_id: int, reminder_type: str, 
-                                    next_date: datetime, stage_number: int = None):
+                                    next_date: datetime, stage_number: int = None, task_day: int = None):
         """Создать напоминание для выращивания"""
         async with self.pool.acquire() as conn:
-            # Деактивируем старые напоминания этого типа
             await conn.execute("""
                 UPDATE reminders 
                 SET is_active = FALSE 
                 WHERE growing_plant_id = $1 AND reminder_type = $2 AND is_active = TRUE
             """, growing_id, reminder_type)
             
-            # Создаем новое напоминание
             await conn.execute("""
                 INSERT INTO reminders 
-                (user_id, growing_plant_id, reminder_type, next_date, stage_number)
-                VALUES ($1, $2, $3, $4, $5)
-            """, user_id, growing_id, reminder_type, next_date, stage_number)
+                (user_id, growing_plant_id, reminder_type, next_date, stage_number, task_day)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, user_id, growing_id, reminder_type, next_date, stage_number, task_day)
     
-    # === ОБЫЧНЫЕ МЕТОДЫ РАСТЕНИЙ (без изменений) ===
+    # === МЕТОДЫ ДЛЯ ОБЫЧНЫХ РАСТЕНИЙ ===
     
     async def save_plant(self, user_id: int, analysis: str, photo_file_id: str, plant_name: str = None) -> int:
         """Сохранить растение с автоматическим извлечением названия"""
         async with self.pool.acquire() as conn:
-            # Пытаемся извлечь название из анализа если не передано
             if not plant_name:
                 plant_name = self.extract_plant_name_from_analysis(analysis)
             
@@ -522,7 +544,6 @@ class PlantDatabase:
                 RETURNING id
             """, user_id, analysis, photo_file_id, plant_name)
             
-            # Добавляем запись в историю
             try:
                 await conn.execute("""
                     INSERT INTO care_history (plant_id, action_type, notes)
@@ -542,7 +563,6 @@ class PlantDatabase:
                 WHERE id = $2 AND user_id = $3
             """, new_name, plant_id, user_id)
             
-            # Добавляем запись в историю
             try:
                 await conn.execute("""
                     INSERT INTO care_history (plant_id, action_type, notes)
@@ -582,7 +602,6 @@ class PlantDatabase:
             row = await conn.fetchrow(query, *params)
             
             if row:
-                # Определяем отображаемое название
                 display_name = row['custom_name'] or row['plant_name']
                 if not display_name:
                     extracted_name = self.extract_plant_name_from_analysis(row['analysis'])
@@ -596,7 +615,6 @@ class PlantDatabase:
     async def get_user_plants(self, user_id: int, limit: int = 10) -> List[Dict]:
         """Получить растения пользователя включая выращиваемые"""
         async with self.pool.acquire() as conn:
-            # Обычные растения
             regular_rows = await conn.fetch("""
                 SELECT id, analysis, photo_file_id, plant_name, custom_name, 
                        saved_date, last_watered, 
@@ -610,7 +628,6 @@ class PlantDatabase:
                 LIMIT $2
             """, user_id, limit)
             
-            # Выращиваемые растения
             growing_rows = await conn.fetch("""
                 SELECT gp.id, gp.plant_name, gp.photo_file_id, gp.started_date,
                        gp.current_stage, gp.total_stages, gp.status,
@@ -623,7 +640,6 @@ class PlantDatabase:
             
             plants = []
             
-            # Добавляем обычные растения
             for row in regular_rows:
                 display_name = None
                 
@@ -650,7 +666,6 @@ class PlantDatabase:
                 plant_data['type'] = 'regular'
                 plants.append(plant_data)
             
-            # Добавляем выращиваемые растения
             for row in growing_rows:
                 stage_info = f"Этап {row['current_stage']}/{row['total_stages']}"
                 if row['current_stage_name']:
@@ -670,7 +685,6 @@ class PlantDatabase:
                 }
                 plants.append(plant_data)
             
-            # Сортируем по дате добавления
             plants.sort(key=lambda x: x['saved_date'], reverse=True)
             
             return plants[:limit]
@@ -679,7 +693,6 @@ class PlantDatabase:
         """Отметить полив"""
         async with self.pool.acquire() as conn:
             if plant_id:
-                # Полив конкретного растения
                 await conn.execute("""
                     UPDATE plants 
                     SET last_watered = CURRENT_TIMESTAMP,
@@ -687,7 +700,6 @@ class PlantDatabase:
                     WHERE user_id = $1 AND id = $2
                 """, user_id, plant_id)
                 
-                # Добавляем запись в историю
                 try:
                     await conn.execute("""
                         INSERT INTO care_history (plant_id, action_type, notes)
@@ -696,7 +708,6 @@ class PlantDatabase:
                 except Exception as e:
                     print(f"Ошибка добавления в историю: {e}")
             else:
-                # Полив всех растений пользователя
                 plant_ids = await conn.fetch("""
                     SELECT id FROM plants WHERE user_id = $1
                 """, user_id)
@@ -708,7 +719,6 @@ class PlantDatabase:
                     WHERE user_id = $1
                 """, user_id)
                 
-                # Добавляем записи в историю для всех растений
                 for plant_row in plant_ids:
                     try:
                         await conn.execute("""
@@ -731,14 +741,12 @@ class PlantDatabase:
     async def create_reminder(self, user_id: int, plant_id: int, reminder_type: str, next_date: datetime):
         """Создать напоминание"""
         async with self.pool.acquire() as conn:
-            # Удаляем старые активные напоминания для этого растения
             await conn.execute("""
                 UPDATE reminders 
                 SET is_active = FALSE 
                 WHERE user_id = $1 AND plant_id = $2 AND reminder_type = $3 AND is_active = TRUE
             """, user_id, plant_id, reminder_type)
             
-            # Создаем новое напоминание
             await conn.execute("""
                 INSERT INTO reminders (user_id, plant_id, reminder_type, next_date)
                 VALUES ($1, $2, $3, $4)
@@ -821,7 +829,6 @@ class PlantDatabase:
     async def get_user_stats(self, user_id: int) -> Dict:
         """Статистика пользователя включая выращивание и обратную связь"""
         async with self.pool.acquire() as conn:
-            # Статистика обычных растений
             regular_stats = await conn.fetchrow("""
                 SELECT 
                     COUNT(*) as total_plants,
@@ -834,7 +841,6 @@ class PlantDatabase:
                 WHERE user_id = $1 AND plant_type = 'regular'
             """, user_id)
             
-            # Статистика выращивания
             growing_stats = await conn.fetchrow("""
                 SELECT 
                     COUNT(*) as total_growing,
@@ -844,7 +850,6 @@ class PlantDatabase:
                 WHERE user_id = $1
             """, user_id)
             
-            # Статистика обратной связи
             feedback_stats = await conn.fetchrow("""
                 SELECT 
                     COUNT(*) as total_feedback
@@ -870,7 +875,6 @@ class PlantDatabase:
         if self.pool:
             await self.pool.close()
 
-# Глобальный экземпляр базы данных
 db = None
 
 async def init_database():
