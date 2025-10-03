@@ -679,6 +679,11 @@ async def get_growing_plan_from_ai(plant_name: str) -> tuple:
         if "---CALENDAR_JSON---" in full_response:
             parts = full_response.split("---CALENDAR_JSON---")
             text_plan = parts[0].strip()
+            
+            # Убираем служебные заголовки из текстового плана
+            text_plan = text_plan.replace("ЧАСТЬ 1 - ТЕКСТОВЫЙ ПЛАН (для отображения пользователю):", "").strip()
+            text_plan = text_plan.replace("ЧАСТЬ 1 - ТЕКСТОВЫЙ ПЛАН:", "").strip()
+            
             calendar_json_str = parts[1].strip() if len(parts) > 1 else None
             
             # Парсим JSON календарь
