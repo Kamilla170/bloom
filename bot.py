@@ -1076,7 +1076,7 @@ def simple_back_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# === ОБРАБОТЧИКИ КОМАНД ===
+# === ОБРАБОТЧИКИ КОМАНД (РЕГИСТРИРУЮТСЯ ПЕРВЫМИ!) ===
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -1146,6 +1146,210 @@ async def grow_command(message: types.Message, state: FSMContext):
         parse_mode="HTML"
     )
     await state.set_state(PlantStates.choosing_plant_to_grow)
+
+@dp.message(Command("add"))
+async def add_command(message: types.Message):
+    """Команда /add"""
+    await message.answer(
+        "📸 <b>Добавление растения</b>\n\n"
+        "Пришлите фото вашего растения, и я:\n"
+        "• Определю вид\n"
+        "• Проанализирую состояние\n"
+        "• Дам рекомендации по уходу\n\n"
+        "📷 Жду ваше фото!",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("analyze"))
+async def analyze_command(message: types.Message):
+    """Команда /analyze"""
+    await message.answer(
+        "🔍 <b>Анализ растения</b>\n\n"
+        "Пришлите фото растения для детального анализа:\n"
+        "• Определение вида\n"
+        "• Оценка состояния\n"
+        "• Проблемы и решения\n"
+        "• Рекомендации по уходу\n\n"
+        "📸 Пришлите фото сейчас:",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("question"))
+async def question_command(message: types.Message, state: FSMContext):
+    """Команда /question"""
+    await message.answer(
+        "❓ <b>Задайте вопрос о растениях</b>\n\n"
+        "💡 Я помогу с:\n"
+        "• Проблемами листьев\n"
+        "• Режимом полива\n"
+        "• Пересадкой\n"
+        "• Болезнями\n"
+        "• Удобрениями\n\n"
+        "✍️ Напишите ваш вопрос:",
+        parse_mode="HTML"
+    )
+    await state.set_state(PlantStates.waiting_question)
+
+@dp.message(Command("plants"))
+async def plants_command(message: types.Message):
+    """Команда /plants"""
+    user_id = message.from_user.id
+    
+    try:
+        db = await get_db()
+        plants = await db.get_user_plants(user_id, limit=15)
+        
+        if not plants:
+            await message.answer(
+                "🌱 <b>Коллекция пуста</b>\n\n"
+                "Добавьте первое растение:\n"
+                "📸 Пришлите фото или используйте /add",
+                parse_mode="HTML",
+                reply_markup=main_menu()
+            )
+            return
+        
+        text = f"🌿 <b>Ваша коллекция ({len(plants)} растений):</b>\n\n"
+        
+        keyboard_buttons = []
+        
+        for i, plant in enumerate(plants, 1):
+            plant_name = plant['display_name']
+            
+            if plant.get('type') == 'growing':
+                stage_info = plant.get('stage_info', 'В процессе')
+                text += f"{i}. 🌱 <b>{plant_name}</b>\n   {stage_info}\n\n"
+            else:
+                current_state = plant.get('current_state', 'healthy')
+                state_emoji = STATE_EMOJI.get(current_state, '🌱')
+                
+                moscow_now = get_moscow_now()
+                
+                if plant.get("last_watered"):
+                    last_watered_utc = plant["last_watered"]
+                    if last_watered_utc.tzinfo is None:
+                        last_watered_utc = pytz.UTC.localize(last_watered_utc)
+                    last_watered_moscow = last_watered_utc.astimezone(MOSCOW_TZ)
+                    
+                    days_ago = (moscow_now.date() - last_watered_moscow.date()).days
+                    if days_ago == 0:
+                        water_status = "💧 Сегодня"
+                    elif days_ago == 1:
+                        water_status = "💧 Вчера"
+                    else:
+                        water_status = f"💧 {days_ago}д"
+                else:
+                    water_status = "🆕 Новое"
+                
+                text += f"{i}. {state_emoji} <b>{plant_name}</b>\n   {water_status}\n\n"
+            
+            short_name = plant_name[:15] + "..." if len(plant_name) > 15 else plant_name
+            keyboard_buttons.append([
+                InlineKeyboardButton(text=f"⚙️ {short_name}", callback_data=f"edit_plant_{plant['id']}")
+            ])
+        
+        keyboard_buttons.extend([
+            [InlineKeyboardButton(text="💧 Полить все", callback_data="water_plants")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ])
+        
+        await message.answer(
+            text, 
+            parse_mode="HTML", 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка коллекции: {e}")
+        await message.answer("❌ Ошибка загрузки")
+
+@dp.message(Command("notifications"))
+async def notifications_command(message: types.Message):
+    """Команда /notifications"""
+    user_id = message.from_user.id
+    
+    try:
+        db = await get_db()
+        settings = await db.get_user_reminder_settings(user_id)
+        
+        if not settings:
+            settings = {
+                'reminder_enabled': True,
+                'reminder_time': '09:00',
+                'timezone': 'Europe/Moscow'
+            }
+        
+        status = "✅ Включены" if settings['reminder_enabled'] else "❌ Выключены"
+        
+        text = f"""
+🔔 <b>Настройки уведомлений</b>
+
+📊 <b>Статус:</b> {status}
+⏰ <b>Время:</b> {settings['reminder_time']} МСК
+🌍 <b>Часовой пояс:</b> {settings['timezone']}
+
+<b>Типы напоминаний:</b>
+💧 Полив растений - ежедневно в 9:00
+📸 Обновление фото - раз в месяц в 10:00
+🌱 Задачи выращивания - по календарю
+
+💡 <b>Управление:</b>
+Напоминания адаптируются под состояние растений!
+"""
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    text="✅ Включить" if not settings['reminder_enabled'] else "❌ Выключить",
+                    callback_data="toggle_reminders"
+                )
+            ],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+        
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка настроек: {e}")
+        await message.answer("❌ Ошибка загрузки настроек")
+
+@dp.message(Command("stats"))
+async def stats_command(message: types.Message):
+    """Команда /stats"""
+    user_id = message.from_user.id
+    
+    try:
+        db = await get_db()
+        stats = await db.get_user_stats(user_id)
+        
+        stats_text = f"📊 <b>Ваша статистика</b>\n\n"
+        stats_text += f"🌱 <b>Растений:</b> {stats['total_plants']}\n"
+        stats_text += f"💧 <b>Поливов:</b> {stats['total_waterings']}\n"
+        
+        if stats['total_growing'] > 0:
+            stats_text += f"\n🌿 <b>Выращивание:</b>\n"
+            stats_text += f"• Активных: {stats['active_growing']}\n"
+            stats_text += f"• Завершенных: {stats['completed_growing']}\n"
+        
+        if stats['first_plant_date']:
+            days_using = (datetime.now().date() - stats['first_plant_date'].date()).days
+            stats_text += f"\n📅 <b>Используете бота:</b> {days_using} дней\n"
+        
+        stats_text += f"\n🎯 <b>Продолжайте ухаживать за растениями!</b>"
+        
+        await message.answer(
+            stats_text,
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка статистики: {e}")
+        await message.answer("❌ Ошибка загрузки статистики", reply_markup=main_menu())
 
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
@@ -2028,6 +2232,43 @@ async def snooze_monthly_reminder_callback(callback: types.CallbackQuery):
     
     await callback.answer()
 
+@dp.callback_query(F.data == "toggle_reminders")
+async def toggle_reminders_callback(callback: types.CallbackQuery):
+    """Переключить напоминания"""
+    try:
+        user_id = callback.from_user.id
+        db = await get_db()
+        
+        async with db.pool.acquire() as conn:
+            current = await conn.fetchrow("""
+                SELECT reminder_enabled FROM user_settings WHERE user_id = $1
+            """, user_id)
+            
+            if current:
+                new_status = not current['reminder_enabled']
+            else:
+                new_status = False
+            
+            await conn.execute("""
+                UPDATE user_settings
+                SET reminder_enabled = $1
+                WHERE user_id = $2
+            """, new_status, user_id)
+        
+        status_text = "✅ включены" if new_status else "❌ выключены"
+        
+        await callback.message.answer(
+            f"🔔 <b>Напоминания {status_text}</b>\n\n"
+            f"Используйте /notifications для управления настройками",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка переключения: {e}")
+        await callback.answer("❌ Ошибка")
+    
+    await callback.answer()
+
 # === ОНБОРДИНГ CALLBACKS ===
 
 @dp.callback_query(F.data == "onboarding_demo")
@@ -2355,6 +2596,8 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
 async def handle_question(message: types.Message, state: FSMContext):
     """Обработка вопросов"""
     try:
+        logger.info(f"❓ Пользователь {message.from_user.id} задал вопрос: {message.text[:50]}")
+        
         processing_msg = await message.reply("🤔 <b>Консультируюсь...</b>", parse_mode="HTML")
         
         user_id = message.from_user.id
@@ -2372,20 +2615,21 @@ async def handle_question(message: types.Message, state: FSMContext):
                 response = await openai_client.chat.completions.create(
                     model="gpt-4o",
                     messages=[
-                        {"role": "system", "content": "Вы - эксперт по растениям. Отвечайте практично."},
+                        {"role": "system", "content": "Вы - эксперт по растениям. Отвечайте практично на русском языке."},
                         {"role": "user", "content": f"{message.text}{user_context}"}
                     ],
                     max_tokens=800,
                     temperature=0.3
                 )
                 answer = response.choices[0].message.content
+                logger.info(f"✅ OpenAI ответил на вопрос")
             except Exception as e:
                 logger.error(f"OpenAI error: {e}")
         
         await processing_msg.delete()
         
         if answer and len(answer) > 50:
-            await message.reply(answer, parse_mode="HTML")
+            await message.reply(answer, parse_mode="HTML" if "<" not in answer else None)
         else:
             await message.reply(
                 "🤔 Не могу дать ответ. Попробуйте переформулировать.",
@@ -2399,23 +2643,31 @@ async def handle_question(message: types.Message, state: FSMContext):
         await message.reply("❌ Ошибка обработки", reply_markup=main_menu())
         await state.clear()
 
-# === ДИАГНОСТИЧЕСКИЙ ОБРАБОТЧИК ===
+# === ДИАГНОСТИЧЕСКИЙ ОБРАБОТЧИК (ДОЛЖЕН БЫТЬ В САМОМ КОНЦЕ!) ===
 
 @dp.message()
 async def catch_all_messages(message: types.Message):
-    """Диагностический обработчик всех сообщений"""
-    logger.info(f"📨 Получено сообщение от {message.from_user.id}: {message.text[:50] if message.text else 'не текст'}")
+    """Диагностический обработчик всех необработанных сообщений"""
+    logger.info(f"📨 Необработанное сообщение от {message.from_user.id}: {message.text[:50] if message.text else 'не текст'}")
     
     # Если сообщение текстовое и не обработано выше
     if message.text:
         await message.reply(
-            "🤔 Не понял команду. Используйте /start для начала работы.",
+            "🤔 <b>Не понял команду</b>\n\n"
+            "Используйте:\n"
+            "• /start - Главное меню\n"
+            "• /add - Добавить растение\n"
+            "• /plants - Моя коллекция\n"
+            "• /help - Справка",
+            parse_mode="HTML",
             reply_markup=main_menu()
         )
     else:
         # Если это медиа без обработчика
         await message.reply(
-            "📸 Пришлите фото растения для анализа, или используйте /start",
+            "📸 <b>Пришлите фото растения для анализа</b>\n\n"
+            "Или используйте команды из меню",
+            parse_mode="HTML",
             reply_markup=main_menu()
         )
 
