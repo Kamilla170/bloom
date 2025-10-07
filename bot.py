@@ -1083,6 +1083,8 @@ async def start_command(message: types.Message):
     """Команда /start с онбордингом"""
     user_id = message.from_user.id
     
+    logger.info(f"📩 Получена команда /start от пользователя {user_id}")
+    
     try:
         db = await get_db()
         
@@ -1098,14 +1100,16 @@ async def start_command(message: types.Message):
                     first_name=message.from_user.first_name
                 )
                 
+                logger.info(f"✅ Новый пользователь {user_id} добавлен")
                 await start_onboarding(message)
                 return
             else:
+                logger.info(f"✅ Возвращающийся пользователь {user_id}")
                 await show_returning_user_welcome(message)
                 return
                 
     except Exception as e:
-        logger.error(f"Ошибка /start: {e}")
+        logger.error(f"❌ Ошибка /start: {e}", exc_info=True)
         await show_returning_user_welcome(message)
 
 async def start_onboarding(message: types.Message):
@@ -2395,6 +2399,26 @@ async def handle_question(message: types.Message, state: FSMContext):
         await message.reply("❌ Ошибка обработки", reply_markup=main_menu())
         await state.clear()
 
+# === ДИАГНОСТИЧЕСКИЙ ОБРАБОТЧИК ===
+
+@dp.message()
+async def catch_all_messages(message: types.Message):
+    """Диагностический обработчик всех сообщений"""
+    logger.info(f"📨 Получено сообщение от {message.from_user.id}: {message.text[:50] if message.text else 'не текст'}")
+    
+    # Если сообщение текстовое и не обработано выше
+    if message.text:
+        await message.reply(
+            "🤔 Не понял команду. Используйте /start для начала работы.",
+            reply_markup=main_menu()
+        )
+    else:
+        # Если это медиа без обработчика
+        await message.reply(
+            "📸 Пришлите фото растения для анализа, или используйте /start",
+            reply_markup=main_menu()
+        )
+
 # === WEBHOOK И ЗАПУСК ===
 
 async def on_startup():
@@ -2402,6 +2426,16 @@ async def on_startup():
     try:
         await init_database()
         logger.info("✅ База данных инициализирована")
+        
+        # КРИТИЧЕСКИ ВАЖНО: Удаляем webhook перед polling
+        logger.info("🔧 Удаление старого webhook...")
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url:
+            logger.warning(f"⚠️ Найден активный webhook: {webhook_info.url}")
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("✅ Webhook удален")
+        else:
+            logger.info("ℹ️ Webhook не был установлен")
         
         # Ежедневные напоминания в 9:00
         scheduler.add_job(
@@ -2432,8 +2466,7 @@ async def on_startup():
             await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
             logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}/webhook")
         else:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ Polling mode включен")
+            logger.info("✅ Polling mode активирован")
             
     except Exception as e:
         logger.error(f"❌ Ошибка запуска: {e}")
@@ -2490,6 +2523,9 @@ async def main():
     """Main функция"""
     try:
         logger.info("🚀 Запуск Bloom AI...")
+        logger.info(f"🔑 BOT_TOKEN: {'✅ Установлен' if BOT_TOKEN else '❌ Отсутствует'}")
+        logger.info(f"🔑 OPENAI_API_KEY: {'✅ Установлен' if OPENAI_API_KEY else '❌ Отсутствует'}")
+        logger.info(f"🌐 WEBHOOK_URL: {WEBHOOK_URL if WEBHOOK_URL else '❌ Не установлен (polling режим)'}")
         
         await on_startup()
         
@@ -2517,6 +2553,7 @@ async def main():
                 await on_shutdown()
         else:
             logger.info("🤖 Запуск в режиме polling")
+            logger.info("⏳ Ожидание сообщений от пользователей...")
             try:
                 await dp.start_polling(bot, drop_pending_updates=True)
             except KeyboardInterrupt:
