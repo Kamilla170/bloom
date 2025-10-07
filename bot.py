@@ -19,6 +19,7 @@ from database import init_database, get_db
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import pytz
+from plant_memory import memory_manager, get_plant_context, save_interaction
 
 # Настройка логирования
 logging.basicConfig(
@@ -1596,8 +1597,9 @@ async def handle_photo(message: types.Message):
 # === СОХРАНЕНИЕ РАСТЕНИЙ ===
 
 @dp.callback_query(F.data == "save_plant")
+@dp.callback_query(F.data == "save_plant")
 async def save_plant_callback(callback: types.CallbackQuery):
-    """Сохранение растения с состоянием"""
+    """Сохранение растения с полным контекстом"""
     user_id = callback.from_user.id
     
     if user_id in temp_analyses:
@@ -1616,9 +1618,11 @@ async def save_plant_callback(callback: types.CallbackQuery):
                 plant_name=analysis_data.get("plant_name", "Неизвестное растение")
             )
             
+            # Устанавливаем интервал полива
             personal_interval = watering_info["interval_days"]
             await db.update_plant_watering_interval(plant_id, personal_interval)
             
+            # Сохраняем состояние растения
             current_state = state_info.get('current_state', 'healthy')
             state_reason = state_info.get('state_reason', 'Первичный анализ AI')
             
@@ -1634,6 +1638,20 @@ async def save_plant_callback(callback: types.CallbackQuery):
                 recommendations=state_info.get('recommendations', '')
             )
             
+            # === НОВОЕ: Сохраняем полный анализ в историю ===
+            await db.save_full_analysis(
+                plant_id=plant_id,
+                user_id=user_id,
+                photo_file_id=analysis_data["photo_file_id"],
+                full_analysis=raw_analysis,
+                confidence=analysis_data.get("confidence", 0),
+                identified_species=analysis_data.get("plant_name"),
+                detected_state=current_state,
+                watering_advice=watering_info.get("personal_recommendations"),
+                lighting_advice=None
+            )
+            
+            # Создаем напоминание
             await create_plant_reminder(plant_id, user_id, personal_interval)
             
             del temp_analyses[user_id]
@@ -1646,8 +1664,8 @@ async def save_plant_callback(callback: types.CallbackQuery):
             success_text += f"🌱 <b>{plant_name}</b> в вашей коллекции\n"
             success_text += f"{state_emoji} <b>Состояние:</b> {state_name}\n"
             success_text += f"⏰ Интервал полива: {personal_interval} дней\n\n"
-            success_text += f"📸 Не забывайте обновлять фото раз в месяц!\n"
-            success_text += f"💡 Я буду отслеживать изменения и адаптировать уход"
+            success_text += f"🧠 <b>Система памяти активирована!</b>\n"
+            success_text += f"Теперь я буду помнить всю историю этого растения"
             
             await callback.message.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
             
@@ -1781,13 +1799,14 @@ async def edit_plant_callback(callback: types.CallbackQuery):
             water_status = "🆕 Еще не поливали"
         
         keyboard = [
-            [InlineKeyboardButton(text="📸 Обновить состояние", callback_data=f"update_state_{plant_id}")],
-            [InlineKeyboardButton(text="📊 История изменений", callback_data=f"view_state_history_{plant_id}")],
-            [InlineKeyboardButton(text="💧 Полить сейчас", callback_data=f"water_plant_{plant_id}")],
-            [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"rename_plant_{plant_id}")],
-            [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_plant_{plant_id}")],
-            [InlineKeyboardButton(text="🌿 К коллекции", callback_data="my_plants")],
-        ]
+    [InlineKeyboardButton(text="📸 Обновить состояние", callback_data=f"update_state_{plant_id}")],
+    [InlineKeyboardButton(text="📊 История изменений", callback_data=f"view_state_history_{plant_id}")],
+    [InlineKeyboardButton(text="❓ Задать вопрос", callback_data=f"ask_about_plant_{plant_id}")],  # НОВАЯ КНОПКА
+    [InlineKeyboardButton(text="💧 Полить сейчас", callback_data=f"water_plant_{plant_id}")],
+    [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"rename_plant_{plant_id}")],
+    [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_plant_{plant_id}")],
+    [InlineKeyboardButton(text="🌿 К коллекции", callback_data="my_plants")],
+]
         
         await callback.message.answer(
             f"⚙️ <b>Управление растением</b>\n\n"
@@ -2591,44 +2610,133 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
         await state.clear()
 
 # === ВОПРОСЫ О РАСТЕНИЯХ ===
+@dp.message(Command("context"))
+async def context_command(message: types.Message):
+    """Показать контекст конкретного растения"""
+    await message.answer(
+        "🧠 <b>Просмотр памяти растения</b>\n\n"
+        "Выберите растение из коллекции, чтобы увидеть\n"
+        "что я помню о нем",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌿 Моя коллекция", callback_data="my_plants")]
+        ])
+    )
 
+@dp.callback_query(F.data.startswith("show_context_"))
+async def show_context_callback(callback: types.CallbackQuery):
+    """Показать память о растении"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        # Получаем контекст
+        context_text = await get_plant_context(plant_id, user_id, focus="general")
+        
+        if not context_text:
+            await callback.message.answer("❌ Контекст не найден")
+            return
+        
+        # Форматируем для отображения
+        display_text = f"🧠 <b>Память о растении</b>\n\n<pre>{context_text[:3000]}</pre>"
+        
+        if len(context_text) > 3000:
+            display_text += "\n\n<i>... и еще больше информации в полной истории</i>"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="❓ Задать вопрос", callback_data=f"ask_about_plant_{plant_id}")],
+            [InlineKeyboardButton(text="🌿 К растению", callback_data=f"edit_plant_{plant_id}")],
+        ]
+        
+        await callback.message.answer(
+            display_text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка показа контекста: {e}")
+        await callback.answer("❌ Ошибка")
+    
+    await callback.answer()
+    
 @dp.message(StateFilter(PlantStates.waiting_question))
 async def handle_question(message: types.Message, state: FSMContext):
-    """Обработка вопросов"""
+    """Обработка вопросов с полным контекстом растения"""
     try:
-        logger.info(f"❓ Пользователь {message.from_user.id} задал вопрос: {message.text[:50]}")
+        logger.info(f"❓ Пользователь {message.from_user.id} задал вопрос")
         
-        processing_msg = await message.reply("🤔 <b>Консультируюсь...</b>", parse_mode="HTML")
-        
+        # Получаем ID растения если есть в состоянии
+        data = await state.get_data()
+        plant_id = data.get('question_plant_id')
         user_id = message.from_user.id
-        user_context = ""
         
-        if user_id in temp_analyses:
+        processing_msg = await message.reply("🤔 <b>Анализирую с учетом истории растения...</b>", parse_mode="HTML")
+        
+        # Строим контекст
+        context_text = ""
+        if plant_id:
+            # Получаем ПОЛНЫЙ контекст из системы памяти
+            context_text = await get_plant_context(plant_id, user_id, focus="general")
+            logger.info(f"📚 Загружен контекст растения {plant_id} ({len(context_text)} символов)")
+        elif user_id in temp_analyses:
+            # Используем временный контекст
             plant_info = temp_analyses[user_id]
             plant_name = plant_info.get("plant_name", "растение")
-            user_context = f"\n\nКонтекст: Недавно анализировал {plant_name}."
+            context_text = f"Контекст: Недавно анализировал {plant_name}"
         
         answer = None
         
         if openai_client:
             try:
+                # Формируем промпт с полным контекстом
+                system_prompt = """Вы - эксперт по растениям с долгосрочной памятью. 
+                
+У вас есть полная история растения: все предыдущие анализы, вопросы, 
+проблемы и паттерны ухода пользователя.
+
+Используйте эту информацию чтобы дать максимально персонализированный 
+и точный ответ. Упоминайте предыдущие проблемы, если они релевантны.
+
+Отвечайте на русском языке, практично и с учетом опыта пользователя."""
+
+                user_prompt = f"""ИСТОРИЯ РАСТЕНИЯ:
+{context_text}
+
+ВОПРОС ПОЛЬЗОВАТЕЛЯ:
+{message.text}
+
+Дайте подробный ответ с учетом всей истории растения."""
+                
                 response = await openai_client.chat.completions.create(
                     model="gpt-4o",
                     messages=[
-                        {"role": "system", "content": "Вы - эксперт по растениям. Отвечайте практично на русском языке."},
-                        {"role": "user", "content": f"{message.text}{user_context}"}
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
                     ],
-                    max_tokens=800,
+                    max_tokens=1000,
                     temperature=0.3
                 )
                 answer = response.choices[0].message.content
-                logger.info(f"✅ OpenAI ответил на вопрос")
+                
+                # Сохраняем взаимодействие
+                if plant_id:
+                    await save_interaction(
+                        plant_id, user_id, message.text, answer,
+                        context_used={"context_length": len(context_text)}
+                    )
+                
+                logger.info(f"✅ OpenAI ответил с полным контекстом")
             except Exception as e:
                 logger.error(f"OpenAI error: {e}")
         
         await processing_msg.delete()
         
         if answer and len(answer) > 50:
+            # Добавляем информацию о контексте
+            if plant_id and context_text:
+                answer += "\n\n💡 <i>Ответ учитывает полную историю вашего растения</i>"
+            
             await message.reply(answer, parse_mode="HTML" if "<" not in answer else None)
         else:
             await message.reply(
@@ -2639,9 +2747,45 @@ async def handle_question(message: types.Message, state: FSMContext):
         await state.clear()
         
     except Exception as e:
-        logger.error(f"Ошибка ответа: {e}")
+        logger.error(f"Ошибка ответа: {e}", exc_info=True)
         await message.reply("❌ Ошибка обработки", reply_markup=main_menu())
         await state.clear()
+@dp.callback_query(F.data.startswith("ask_about_plant_"))
+async def ask_about_plant_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Задать вопрос о конкретном растении"""
+    try:
+        plant_id = int(callback.data.split("_")[-1])
+        user_id = callback.from_user.id
+        
+        db = await get_db()
+        plant = await db.get_plant_with_state(plant_id, user_id)
+        
+        if not plant:
+            await callback.answer("❌ Растение не найдено")
+            return
+        
+        # Сохраняем ID растения в состояние
+        await state.update_data(question_plant_id=plant_id)
+        await state.set_state(PlantStates.waiting_question)
+        
+        plant_name = plant['display_name']
+        
+        await callback.message.answer(
+            f"❓ <b>Вопрос о растении: {plant_name}</b>\n\n"
+            f"🧠 Я буду учитывать всю историю этого растения:\n"
+            f"• Все предыдущие анализы\n"
+            f"• Ваши прошлые вопросы\n"
+            f"• Историю проблем\n"
+            f"• Паттерны ухода\n\n"
+            f"✍️ Напишите ваш вопрос:",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await callback.answer("❌ Ошибка")
+    
+    await callback.answer()
 
 # === ДИАГНОСТИЧЕСКИЙ ОБРАБОТЧИК (ДОЛЖЕН БЫТЬ В САМОМ КОНЦЕ!) ===
 
