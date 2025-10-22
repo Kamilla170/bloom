@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 from config import OPENAI_API_KEY, PLANT_IDENTIFICATION_PROMPT
 from utils.image_utils import optimize_image_for_analysis
 from utils.formatters import format_plant_analysis
+from utils.time_utils import get_current_season
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def extract_watering_info(analysis_text: str) -> dict:
             if numbers:
                 try:
                     interval = int(numbers[0])
-                    if 1 <= interval <= 15:
+                    if 2 <= interval <= 20:
                         watering_info["interval_days"] = interval
                 except:
                     pass
@@ -118,23 +119,35 @@ async def analyze_with_openai_advanced(image_data: bytes, user_question: str = N
         return {"success": False, "error": "OpenAI API недоступен"}
     
     try:
+        # Получаем информацию о текущем сезоне
+        season_data = get_current_season()
+        
         optimized_image = await optimize_image_for_analysis(image_data, high_quality=True)
         base64_image = base64.b64encode(optimized_image).decode('utf-8')
         
-        prompt = PLANT_IDENTIFICATION_PROMPT
+        # Форматируем промпт с учетом сезона
+        prompt = PLANT_IDENTIFICATION_PROMPT.format(
+            season_name=season_data['name'],
+            season_description=season_data['description'],
+            season_water_note=f"Корректировка интервала: {season_data['water_adjustment']:+d} дня" if season_data['water_adjustment'] != 0 else "Стандартный режим",
+            season_light_note=season_data['light_note'],
+            season_temperature_note=season_data['temperature_note'],
+            season_feeding_note=season_data['feeding_note'],
+            season_water_adjustment=f"{season_data['water_adjustment']:+d} дня к базовому интервалу"
+        )
         
         if previous_state:
-            prompt += f"\n\nПредыдущее состояние растения: {previous_state}. Определите что изменилось."
+            prompt += f"\n\nПредыдущее состояние растения: {previous_state}. Определите что изменилось с учетом сезонных факторов."
         
         if user_question:
-            prompt += f"\n\nДополнительный вопрос: {user_question}"
+            prompt += f"\n\nДополнительный вопрос пользователя: {user_question}"
         
         response = await openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
                     "role": "system",
-                    "content": "Вы - профессиональный ботаник-диагност с 30-летним опытом. Проводите точную идентификацию и профессиональную оценку состояния растений. Все выводы обосновывайте наблюдаемыми признаками."
+                    "content": "Вы - профессиональный ботаник-диагност с 30-летним опытом. Проводите точную идентификацию и профессиональную оценку состояния растений. Все выводы обосновывайте наблюдаемыми признаками. ОБЯЗАТЕЛЬНО учитывайте сезонность при рекомендациях по поливу."
                 },
                 {
                     "role": "user",
@@ -179,9 +192,13 @@ async def analyze_with_openai_advanced(image_data: bytes, user_question: str = N
         
         # Извлекаем состояние
         state_info = extract_plant_state_from_analysis(raw_analysis)
+        
+        # Применяем сезонную корректировку к интервалу полива
+        state_info['season_adjustment'] = season_data['water_adjustment']
+        
         formatted_analysis = format_plant_analysis(raw_analysis, confidence, state_info)
         
-        logger.info(f"✅ Анализ завершен. Состояние: {state_info['current_state']}, Уверенность: {confidence}%")
+        logger.info(f"✅ Анализ завершен. Сезон: {season_data['name']}, Состояние: {state_info['current_state']}, Уверенность: {confidence}%")
         
         return {
             "success": True,
@@ -190,7 +207,8 @@ async def analyze_with_openai_advanced(image_data: bytes, user_question: str = N
             "plant_name": plant_name,
             "confidence": confidence,
             "source": "openai_advanced",
-            "state_info": state_info
+            "state_info": state_info,
+            "season_data": season_data
         }
         
     except Exception as e:
@@ -220,21 +238,23 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None,
     
     logger.warning("⚠️ Fallback")
     
-    # Fallback текст
-    fallback_text = """
+    # Fallback текст с учетом сезона
+    season_data = get_current_season()
+    
+    fallback_text = f"""
 РАСТЕНИЕ: Комнатное растение (требуется идентификация)
 УВЕРЕННОСТЬ: 20%
 ТЕКУЩЕЕ_СОСТОЯНИЕ: healthy
 ПРИЧИНА_СОСТОЯНИЯ: Недостаточно данных
 ЭТАП_РОСТА: young
 СОСТОЯНИЕ: Требуется визуальный осмотр
-ПОЛИВ_АНАЛИЗ: Почва не видна
-ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы
-ПОЛИВ_ИНТЕРВАЛ: 5
-СВЕТ: Яркий рассеянный свет
-ТЕМПЕРАТУРА: 18-24°C
+ПОЛИВ_АНАЛИЗ: Субстрат не виден на фото
+ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы. Сейчас {season_data['name']} - {season_data['description'].lower()}
+ПОЛИВ_ИНТЕРВАЛ: {5 + season_data['water_adjustment']}
+СВЕТ: Яркий рассеянный свет. {season_data['light_note']}
+ТЕМПЕРАТУРА: {season_data['temperature_note']}
 ВЛАЖНОСТЬ: 40-60%
-ПОДКОРМКА: Раз в 2-4 недели весной-летом
+ПОДКОРМКА: {season_data['feeding_note']}
 СОВЕТ: Сделайте фото при хорошем освещении для точной идентификации
     """.strip()
     
@@ -249,7 +269,8 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None,
         "confidence": 20,
         "source": "fallback",
         "needs_retry": True,
-        "state_info": state_info
+        "state_info": state_info,
+        "season_data": season_data
     }
 
 
@@ -259,7 +280,17 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
         return "❌ OpenAI API недоступен"
     
     try:
-        system_prompt = """Вы - профессиональный ботаник-консультант с многолетним опытом диагностики и ухода за растениями.
+        # Получаем информацию о сезоне
+        season_data = get_current_season()
+        
+        system_prompt = f"""Вы - профессиональный ботаник-консультант с многолетним опытом диагностики и ухода за растениями.
+
+ТЕКУЩИЙ СЕЗОН: {season_data['name']} ({season_data['description']})
+СЕЗОННЫЕ ОСОБЕННОСТИ УХОДА:
+- Полив: {season_data['description']}. Корректировка интервала: {season_data['water_adjustment']:+d} дня
+- Освещение: {season_data['light_note']}
+- Температура: {season_data['temperature_note']}
+- Подкормка: {season_data['feeding_note']}
 
 СТИЛЬ ОБЩЕНИЯ:
 - Авторитетный, экспертный, но доступный
@@ -274,19 +305,18 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
 У вас есть полная история растения: все анализы, проблемы, паттерны ухода пользователя.
 Основывайте рекомендации на этих данных.
 
+ОБЯЗАТЕЛЬНО учитывайте текущий сезон ({season_data['name']}) при всех рекомендациях по уходу!
+
 ПРИМЕРЫ ПРАВИЛЬНОГО СТИЛЯ:
 ❌ Неправильно: "Твой рипсалис чувствует себя отлично! Продолжай в том же духе!"
-✅ Правильно: "Рипсалис находится в хорошем состоянии. Текущий режим полива оптимален - продолжайте поливать раз в 7 дней."
-
-❌ Неправильно: "Просто проверяй почву перед поливом - она должна быть сухой."
-✅ Правильно: "Перед поливом проверяйте влажность почвы на глубине 2-3 см. Поливайте только когда субстрат просохнет."
+✅ Правильно: "Рипсалис находится в хорошем состоянии. Учитывая, что сейчас {season_data['name'].lower()}, текущий режим полива оптимален - продолжайте поливать раз в 7 дней."
 
 СТРУКТУРА ОТВЕТА (БЕЗ НУМЕРАЦИИ):
 Первый абзац: Оценка текущего состояния и диагноз ситуации
 
-Второй абзац: Объяснение причины проблемы или текущей ситуации  
+Второй абзац: Объяснение причины проблемы или текущей ситуации с учетом сезона
 
-Третий абзац: Конкретные действия с точными параметрами (температура, частота, количество)
+Третий абзац: Конкретные действия с точными параметрами, адаптированные под {season_data['name'].lower()}
 
 Четвертый абзац (при необходимости): Контроль результата и когда ожидать изменений
 
@@ -301,12 +331,13 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
 Дайте профессиональный ответ (2-4 абзаца) БЕЗ нумерации и markdown:
 
 Абзац 1: Оценка - диагноз текущей ситуации
-Абзац 2: Причина - что вызвало проблему или текущее состояние
-Абзац 3: Решение - конкретные действия с параметрами
+Абзац 2: Причина - что вызвало проблему с учетом сезона ({season_data['name']})
+Абзац 3: Решение - конкретные действия с параметрами, адаптированные под сезон
 Абзац 4: Контроль - когда ожидать результат (если применимо)
 
 Используйте данные из истории растения для персонализации рекомендаций.
-НЕ используйте markdown форматирование (**, *, _) и нумерованные списки."""
+НЕ используйте markdown форматирование (**, *, _) и нумерованные списки.
+ОБЯЗАТЕЛЬНО учитывайте текущий сезон ({season_data['name']}) в рекомендациях."""
         
         response = await openai_client.chat.completions.create(
             model="gpt-4o",
@@ -314,13 +345,13 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=500,  # Достаточно для полного экспертного ответа
-            temperature=0.3  # Более точные, менее творческие ответы
+            max_tokens=500,
+            temperature=0.3
         )
         
         answer = response.choices[0].message.content
         
-        logger.info(f"✅ OpenAI ответил с контекстом")
+        logger.info(f"✅ OpenAI ответил с контекстом. Сезон: {season_data['name']}")
         return answer
         
     except Exception as e:
@@ -334,14 +365,21 @@ async def generate_growing_plan(plant_name: str) -> tuple:
         return None, None
     
     try:
+        # Получаем информацию о сезоне
+        season_data = get_current_season()
+        
         prompt = f"""
 Составьте профессиональный агротехнический план выращивания для: {plant_name}
 
+ТЕКУЩИЙ СЕЗОН: {season_data['name']}
+УЧИТЫВАЙТЕ: {season_data['description']}
+
 Требования к плану:
-- Научно обоснованные рекомендации
+- Научно обоснованные рекомендации с учетом текущего сезона
 - Конкретные сроки и параметры
 - Учет критических факторов успеха
 - Превентивные меры против типичных проблем
+- Адаптация под {season_data['name'].lower()}
 
 Формат ответа:
 
@@ -371,7 +409,7 @@ async def generate_growing_plan(plant_name: str) -> tuple:
             messages=[
                 {
                     "role": "system", 
-                    "content": "Вы - агроном-консультант с опытом выращивания широкого спектра растений. Составляйте практичные, научно обоснованные планы."
+                    "content": f"Вы - агроном-консультант с опытом выращивания широкого спектра растений. Составляйте практичные, научно обоснованные планы. Учитывайте, что сейчас {season_data['name']} - {season_data['description'].lower()}."
                 },
                 {"role": "user", "content": prompt}
             ],
