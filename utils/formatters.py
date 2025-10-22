@@ -79,6 +79,10 @@ def format_plant_analysis(raw_text: str, confidence: float = None, state_info: d
         elif line.startswith("СОВЕТ:"):
             advice = line.replace("СОВЕТ:", "").strip()
             formatted += f"\n💡 <b>Персональный совет:</b> {advice}"
+        
+        elif line.startswith("СЕЗОННЫЙ_СОВЕТ:"):
+            seasonal_advice = line.replace("СЕЗОННЫЙ_СОВЕТ:", "").strip()
+            formatted += f"\n\n🌍 <b>Важно для текущего сезона:</b> {seasonal_advice}"
     
     if state_info:
         current_state = state_info.get('current_state', 'healthy')
