@@ -20,6 +20,9 @@ PORT = int(os.getenv("PORT", 8000))
 # Часовой пояс
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
+# Администраторы (получают ежедневную статистику)
+ADMIN_USER_IDS = [455263261, 8390994875]
+
 # Маппинг состояний растений
 STATE_EMOJI = {
     'healthy': '🌱',
@@ -179,3 +182,4 @@ def validate_config():
     logger.info(f"🔑 OPENAI_API_KEY: {'✅ Установлен' if OPENAI_API_KEY else '❌ Отсутствует'}")
     logger.info(f"🔑 PLANTID_API_KEY: {'✅ Установлен' if PLANTID_API_KEY else '❌ Отсутствует'}")
     logger.info(f"🌐 WEBHOOK_URL: {WEBHOOK_URL if WEBHOOK_URL else '❌ Не установлен (polling режим)'}")
+    logger.info(f"👨‍💼 ADMIN_USER_IDS: {ADMIN_USER_IDS}")
