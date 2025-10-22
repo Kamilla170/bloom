@@ -20,12 +20,16 @@ from services.reminder_service import (
     check_and_send_reminders, 
     check_monthly_photo_reminders
 )
+from services.admin_stats_service import send_daily_report_to_admins
 
 # Импорты handlers
 from handlers import (
     commands, photo, callbacks, plants, 
     questions, feedback, onboarding, growing
 )
+
+# Импорт middleware
+from middleware import ActivityTrackingMiddleware
 
 # Настройка логирования уже в config
 logger.info("🚀 Запуск Bloom AI Bot...")
@@ -57,6 +61,9 @@ async def on_startup():
             logger.info("✅ Webhook удален")
         else:
             logger.info("ℹ️ Webhook не был установлен")
+        
+        # Регистрация middleware
+        register_middleware()
         
         # Регистрация handlers
         register_handlers()
@@ -98,6 +105,15 @@ async def on_shutdown():
         pass
 
 
+def register_middleware():
+    """Регистрация middleware"""
+    # Регистрируем middleware для отслеживания активности
+    dp.message.middleware(ActivityTrackingMiddleware())
+    dp.callback_query.middleware(ActivityTrackingMiddleware())
+    
+    logger.info("✅ Middleware зарегистрированы (Activity Tracking)")
+
+
 def register_handlers():
     """Регистрация всех handlers"""
     # Регистрация routers в правильном порядке
@@ -135,10 +151,21 @@ def setup_scheduler():
         replace_existing=True
     )
     
+    # Ежедневная статистика для администраторов в 9:00 МСК
+    scheduler.add_job(
+        lambda: send_daily_report_to_admins(bot),
+        'cron',
+        hour=9,
+        minute=0,
+        id='daily_stats_report',
+        replace_existing=True
+    )
+    
     scheduler.start()
     logger.info("🔔 Планировщик запущен")
     logger.info("⏰ Ежедневные напоминания: 9:00 МСК")
     logger.info("📸 Месячные напоминания: 10:00 МСК")
+    logger.info("📊 Ежедневная статистика: 9:00 МСК")
 
 
 async def webhook_handler(request):
@@ -165,14 +192,14 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI", 
-        "version": "5.0 - Refactored"
+        "version": "5.1 - Stats System"
     })
 
 
 async def main():
     """Main функция"""
     try:
-        logger.info("🚀 Запуск Bloom AI v5.0 (Refactored)...")
+        logger.info("🚀 Запуск Bloom AI v5.1 (Stats System)...")
         
         await on_startup()
         
@@ -188,8 +215,8 @@ async def main():
             site = web.TCPSite(runner, '0.0.0.0', PORT)
             await site.start()
             
-            logger.info(f"🚀 Bloom AI v5.0 запущен на порту {PORT}")
-            logger.info(f"✅ Refactored architecture активирована!")
+            logger.info(f"🚀 Bloom AI v5.1 запущен на порту {PORT}")
+            logger.info(f"✅ Stats System активирована!")
             
             try:
                 await asyncio.Future()
