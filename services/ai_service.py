@@ -301,9 +301,6 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
         
         answer = response.choices[0].message.content
         
-        if plant_context:
-            answer += "\n\n💡 <i>Ответ учитывает полную историю вашего растения</i>"
-        
         logger.info(f"✅ OpenAI ответил с контекстом")
         return answer
         
