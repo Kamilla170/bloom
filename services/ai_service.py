@@ -5,7 +5,7 @@ from openai import AsyncOpenAI
 from config import OPENAI_API_KEY, PLANT_IDENTIFICATION_PROMPT
 from utils.image_utils import optimize_image_for_analysis
 from utils.formatters import format_plant_analysis
-from utils.time_utils import get_current_season
+from utils.season_utils import get_current_season, get_seasonal_care_tips
 
 logger = logging.getLogger(__name__)
 
