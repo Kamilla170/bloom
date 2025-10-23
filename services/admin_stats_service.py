@@ -44,26 +44,26 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 WHERE created_at >= $1 AND created_at < $2
             """, target_date_start, target_date_end)
             
-            # Считаем активных по реальным действиям (ИСПРАВЛЕНО: явная квалификация)
+            # ИСПРАВЛЕНО: квалифицировали все колонки в подзапросах
             active_users = await conn.fetchval("""
                 SELECT COUNT(DISTINCT sub.user_id) FROM (
-                    SELECT user_id FROM plants 
-                    WHERE saved_date >= $1 AND saved_date < $2
+                    SELECT p.user_id FROM plants p
+                    WHERE p.saved_date >= $1 AND p.saved_date < $2
                     UNION ALL
-                    SELECT user_id FROM plant_qa_history 
-                    WHERE question_date >= $1 AND question_date < $2
+                    SELECT qa.user_id FROM plant_qa_history qa
+                    WHERE qa.question_date >= $1 AND qa.question_date < $2
                     UNION ALL
-                    SELECT user_id FROM plant_analyses_full 
-                    WHERE analysis_date >= $1 AND analysis_date < $2
+                    SELECT pa.user_id FROM plant_analyses_full pa
+                    WHERE pa.analysis_date >= $1 AND pa.analysis_date < $2
                     UNION ALL
-                    SELECT user_id FROM care_history 
-                    WHERE action_date >= $1 AND action_date < $2
+                    SELECT ch.user_id FROM care_history ch
+                    WHERE ch.action_date >= $1 AND ch.action_date < $2
                     UNION ALL
-                    SELECT user_id FROM growing_plants 
-                    WHERE started_date >= $1 AND started_date < $2
+                    SELECT gp.user_id FROM growing_plants gp
+                    WHERE gp.started_date >= $1 AND gp.started_date < $2
                     UNION ALL
-                    SELECT user_id FROM feedback 
-                    WHERE created_at >= $1 AND created_at < $2
+                    SELECT f.user_id FROM feedback f
+                    WHERE f.created_at >= $1 AND f.created_at < $2
                 ) AS sub
             """, target_date_start, target_date_end)
             
@@ -117,22 +117,22 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 WHERE created_at >= $1 AND created_at < $2
             """, target_date_start, target_date_end)
             
-            # 5. ТОП-3 АКТИВНЫХ (ИСПРАВЛЕНО: явная квалификация в GROUP BY)
+            # 5. ТОП-3 АКТИВНЫХ - ИСПРАВЛЕНО: квалифицировали все колонки
             top_active = await conn.fetch("""
                 WITH user_actions AS (
                     SELECT sub.user_id, COUNT(*) as action_count
                     FROM (
-                        SELECT user_id FROM plants WHERE saved_date >= $1 AND saved_date < $2
+                        SELECT p.user_id FROM plants p WHERE p.saved_date >= $1 AND p.saved_date < $2
                         UNION ALL
-                        SELECT user_id FROM plant_qa_history WHERE question_date >= $1 AND question_date < $2
+                        SELECT qa.user_id FROM plant_qa_history qa WHERE qa.question_date >= $1 AND qa.question_date < $2
                         UNION ALL
-                        SELECT user_id FROM plant_analyses_full WHERE analysis_date >= $1 AND analysis_date < $2
+                        SELECT pa.user_id FROM plant_analyses_full pa WHERE pa.analysis_date >= $1 AND pa.analysis_date < $2
                         UNION ALL
-                        SELECT user_id FROM care_history WHERE action_date >= $1 AND action_date < $2
+                        SELECT ch.user_id FROM care_history ch WHERE ch.action_date >= $1 AND ch.action_date < $2
                         UNION ALL
-                        SELECT user_id FROM growing_plants WHERE started_date >= $1 AND started_date < $2
+                        SELECT gp.user_id FROM growing_plants gp WHERE gp.started_date >= $1 AND gp.started_date < $2
                         UNION ALL
-                        SELECT user_id FROM feedback WHERE created_at >= $1 AND created_at < $2
+                        SELECT f.user_id FROM feedback f WHERE f.created_at >= $1 AND f.created_at < $2
                     ) AS sub
                     GROUP BY sub.user_id
                 )
@@ -143,7 +143,7 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 LIMIT 3
             """, target_date_start, target_date_end)
             
-            # 6. RETENTION (7-дневный) - ИСПРАВЛЕНО: явная квалификация
+            # 6. RETENTION (7-дневный) - ИСПРАВЛЕНО: квалифицировали все колонки
             week_ago = target_date_start - timedelta(days=7)
             users_week_ago = await conn.fetchval("""
                 SELECT COUNT(*) FROM users WHERE created_at < $1
@@ -152,21 +152,21 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
             # Считаем retention по реальной активности
             active_from_week_ago = await conn.fetchval("""
                 SELECT COUNT(DISTINCT sub.user_id) FROM (
-                    SELECT user_id FROM plants 
-                    WHERE saved_date >= $1 AND saved_date < $2
-                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    SELECT p.user_id FROM plants p
+                    WHERE p.saved_date >= $1 AND p.saved_date < $2
+                    AND p.user_id IN (SELECT u.user_id FROM users u WHERE u.created_at < $3)
                     UNION ALL
-                    SELECT user_id FROM plant_qa_history 
-                    WHERE question_date >= $1 AND question_date < $2
-                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    SELECT qa.user_id FROM plant_qa_history qa
+                    WHERE qa.question_date >= $1 AND qa.question_date < $2
+                    AND qa.user_id IN (SELECT u.user_id FROM users u WHERE u.created_at < $3)
                     UNION ALL
-                    SELECT user_id FROM plant_analyses_full 
-                    WHERE analysis_date >= $1 AND analysis_date < $2
-                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    SELECT pa.user_id FROM plant_analyses_full pa
+                    WHERE pa.analysis_date >= $1 AND pa.analysis_date < $2
+                    AND pa.user_id IN (SELECT u.user_id FROM users u WHERE u.created_at < $3)
                     UNION ALL
-                    SELECT user_id FROM care_history 
-                    WHERE action_date >= $1 AND action_date < $2
-                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    SELECT ch.user_id FROM care_history ch
+                    WHERE ch.action_date >= $1 AND ch.action_date < $2
+                    AND ch.user_id IN (SELECT u.user_id FROM users u WHERE u.created_at < $3)
                 ) AS sub
             """, target_date_start, target_date_end, week_ago)
             
