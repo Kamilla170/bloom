@@ -44,9 +44,9 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 WHERE created_at >= $1 AND created_at < $2
             """, target_date_start, target_date_end)
             
-            # Считаем активных по реальным действиям (явно указываем алиас)
+            # Считаем активных по реальным действиям (ИСПРАВЛЕНО: убран префикс алиаса)
             active_users = await conn.fetchval("""
-                SELECT COUNT(DISTINCT active_user_actions.user_id) FROM (
+                SELECT COUNT(DISTINCT user_id) FROM (
                     SELECT user_id FROM plants 
                     WHERE saved_date >= $1 AND saved_date < $2
                     UNION ALL
@@ -117,10 +117,10 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 WHERE created_at >= $1 AND created_at < $2
             """, target_date_start, target_date_end)
             
-            # 5. ТОП-3 АКТИВНЫХ (по количеству действий)
+            # 5. ТОП-3 АКТИВНЫХ (ИСПРАВЛЕНО: убран префикс алиаса)
             top_active = await conn.fetch("""
                 WITH user_actions AS (
-                    SELECT all_actions.user_id, COUNT(*) as action_count
+                    SELECT user_id, COUNT(*) as action_count
                     FROM (
                         SELECT user_id FROM plants WHERE saved_date >= $1 AND saved_date < $2
                         UNION ALL
@@ -130,11 +130,11 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                         UNION ALL
                         SELECT user_id FROM care_history WHERE action_date >= $1 AND action_date < $2
                         UNION ALL
-                        SELECT user_id FROM growing_plants WHERE started_date >= $1 AND saved_date < $2
+                        SELECT user_id FROM growing_plants WHERE started_date >= $1 AND started_date < $2
                         UNION ALL
                         SELECT user_id FROM feedback WHERE created_at >= $1 AND created_at < $2
                     ) AS all_actions
-                    GROUP BY all_actions.user_id
+                    GROUP BY user_id
                 )
                 SELECT u.user_id, u.username, u.first_name, ua.action_count
                 FROM user_actions ua
@@ -143,15 +143,15 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 LIMIT 3
             """, target_date_start, target_date_end)
             
-            # 6. RETENTION (7-дневный)
+            # 6. RETENTION (7-дневный) - ИСПРАВЛЕНО: убран префикс алиаса
             week_ago = target_date_start - timedelta(days=7)
             users_week_ago = await conn.fetchval("""
                 SELECT COUNT(*) FROM users WHERE created_at < $1
             """, week_ago)
             
-            # Считаем retention по реальной активности (явно указываем алиас)
+            # Считаем retention по реальной активности
             active_from_week_ago = await conn.fetchval("""
-                SELECT COUNT(DISTINCT retention_actions.user_id) FROM (
+                SELECT COUNT(DISTINCT user_id) FROM (
                     SELECT user_id FROM plants 
                     WHERE saved_date >= $1 AND saved_date < $2
                     AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
