@@ -122,18 +122,37 @@ async def analyze_with_openai_advanced(image_data: bytes, user_question: str = N
         # Получаем информацию о текущем сезоне
         season_data = get_current_season()
         
+        # ИСПРАВЛЕНО: Формируем рекомендации по подкормке на основе сезона
+        feeding_recommendations = {
+            'winter': 'Прекратить подкормки или минимизировать до 1 раза в месяц половинной дозой',
+            'spring': 'Начать подкормки с половинной дозы, постепенно увеличивая до полной каждые 2 недели',
+            'summer': 'Регулярные подкормки каждые 1-2 недели полной дозой',
+            'autumn': 'Постепенно сокращать подкормки, с октября прекратить для большинства видов'
+        }
+        
+        # ИСПРАВЛЕНО: Вычисляем числовую корректировку полива
+        water_adjustment_days = 0
+        if season_data['season'] == 'winter':
+            water_adjustment_days = +5  # Зимой поливать реже
+        elif season_data['season'] == 'spring':
+            water_adjustment_days = 0  # Весной базовый интервал
+        elif season_data['season'] == 'summer':
+            water_adjustment_days = -2  # Летом поливать чаще
+        elif season_data['season'] == 'autumn':
+            water_adjustment_days = +2  # Осенью начинать сокращать
+        
         optimized_image = await optimize_image_for_analysis(image_data, high_quality=True)
         base64_image = base64.b64encode(optimized_image).decode('utf-8')
         
-        # Форматируем промпт с учетом сезона
+        # ИСПРАВЛЕНО: Форматируем промпт с правильными ключами
         prompt = PLANT_IDENTIFICATION_PROMPT.format(
-            season_name=season_data['name'],
-            season_description=season_data['description'],
-            season_water_note=f"Корректировка интервала: {season_data['water_adjustment']:+d} дня" if season_data['water_adjustment'] != 0 else "Стандартный режим",
-            season_light_note=season_data['light_note'],
-            season_temperature_note=season_data['temperature_note'],
-            season_feeding_note=season_data['feeding_note'],
-            season_water_adjustment=f"{season_data['water_adjustment']:+d} дня к базовому интервалу"
+            season_name=season_data['season_ru'],  # ✅ 'Зима'
+            season_description=season_data['growth_phase'],  # ✅ 'Период покоя'
+            season_water_note=season_data['watering_adjustment'],  # ✅ строка с описанием
+            season_light_note=season_data['light_hours'],  # ✅ описание светового дня
+            season_temperature_note=season_data['temperature_note'],  # ✅ рекомендации по температуре
+            season_feeding_note=feeding_recommendations.get(season_data['season'], 'Стандартный режим'),  # ✅ рекомендации по подкормке
+            season_water_adjustment=f"{water_adjustment_days:+d} дня к базовому интервалу"  # ✅ числовая корректировка
         )
         
         if previous_state:
@@ -193,12 +212,12 @@ async def analyze_with_openai_advanced(image_data: bytes, user_question: str = N
         # Извлекаем состояние
         state_info = extract_plant_state_from_analysis(raw_analysis)
         
-        # Применяем сезонную корректировку к интервалу полива
-        state_info['season_adjustment'] = season_data['water_adjustment']
+        # ИСПРАВЛЕНО: Применяем сезонную корректировку
+        state_info['season_adjustment'] = water_adjustment_days
         
         formatted_analysis = format_plant_analysis(raw_analysis, confidence, state_info)
         
-        logger.info(f"✅ Анализ завершен. Сезон: {season_data['name']}, Состояние: {state_info['current_state']}, Уверенность: {confidence}%")
+        logger.info(f"✅ Анализ завершен. Сезон: {season_data['season_ru']}, Состояние: {state_info['current_state']}, Уверенность: {confidence}%")
         
         return {
             "success": True,
@@ -212,7 +231,7 @@ async def analyze_with_openai_advanced(image_data: bytes, user_question: str = N
         }
         
     except Exception as e:
-        logger.error(f"❌ OpenAI error: {e}")
+        logger.error(f"❌ OpenAI error: {e}", exc_info=True)  # ИСПРАВЛЕНО: добавлен exc_info для полного стека
         return {"success": False, "error": str(e)}
 
 
@@ -241,6 +260,15 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None,
     # Fallback текст с учетом сезона
     season_data = get_current_season()
     
+    # ИСПРАВЛЕНО: вычисляем корректировку для fallback
+    water_adjustment_days = 0
+    if season_data['season'] == 'winter':
+        water_adjustment_days = +5
+    elif season_data['season'] == 'summer':
+        water_adjustment_days = -2
+    elif season_data['season'] == 'autumn':
+        water_adjustment_days = +2
+    
     fallback_text = f"""
 РАСТЕНИЕ: Комнатное растение (требуется идентификация)
 УВЕРЕННОСТЬ: 20%
@@ -249,12 +277,12 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None,
 ЭТАП_РОСТА: young
 СОСТОЯНИЕ: Требуется визуальный осмотр
 ПОЛИВ_АНАЛИЗ: Субстрат не виден на фото
-ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы. Сейчас {season_data['name']} - {season_data['description'].lower()}
-ПОЛИВ_ИНТЕРВАЛ: {5 + season_data['water_adjustment']}
-СВЕТ: Яркий рассеянный свет. {season_data['light_note']}
+ПОЛИВ_РЕКОМЕНДАЦИИ: Проверяйте влажность почвы. Сейчас {season_data['season_ru']} - {season_data['growth_phase'].lower()}
+ПОЛИВ_ИНТЕРВАЛ: {5 + water_adjustment_days}
+СВЕТ: Яркий рассеянный свет. {season_data['light_hours']}
 ТЕМПЕРАТУРА: {season_data['temperature_note']}
 ВЛАЖНОСТЬ: 40-60%
-ПОДКОРМКА: {season_data['feeding_note']}
+ПОДКОРМКА: {season_data['watering_adjustment']}
 СОВЕТ: Сделайте фото при хорошем освещении для точной идентификации
     """.strip()
     
@@ -355,8 +383,8 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=500,  # Достаточно для полного экспертного ответа
-            temperature=0.3  # Более точные, менее творческие ответы
+            max_tokens=500,
+            temperature=0.3
         )
         
         answer = response.choices[0].message.content
