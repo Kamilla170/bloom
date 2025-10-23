@@ -7,6 +7,10 @@ logger = logging.getLogger(__name__)
 async def optimize_image_for_analysis(image_data: bytes, high_quality: bool = True) -> bytes:
     """Оптимизация изображения для анализа"""
     try:
+        # Если получили BytesIO - конвертируем в bytes
+        if isinstance(image_data, BytesIO):
+            image_data = image_data.getvalue()
+        
         image = Image.open(BytesIO(image_data))
         if image.mode != 'RGB':
             image = image.convert('RGB')
@@ -25,7 +29,12 @@ async def optimize_image_for_analysis(image_data: bytes, high_quality: bool = Tr
         output = BytesIO()
         quality = 95 if high_quality else 85
         image.save(output, format='JPEG', quality=quality, optimize=True)
+        
+        # ИСПРАВЛЕНО: возвращаем bytes, а не BytesIO объект
         return output.getvalue()
     except Exception as e:
-        logger.error(f"Ошибка оптимизации изображения: {e}")
+        logger.error(f"Ошибка оптимизации изображения: {e}", exc_info=True)
+        # В случае ошибки возвращаем исходные данные как bytes
+        if isinstance(image_data, BytesIO):
+            return image_data.getvalue()
         return image_data
