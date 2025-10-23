@@ -39,7 +39,10 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
         
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
-        file_data = await bot.download_file(file.file_path)
+        
+        # ИСПРАВЛЕНО: используем bot.download() вместо bot.download_file()
+        # Это гарантирует получение bytes напрямую в aiogram 3.x
+        image_bytes = await bot.download(file)
         
         from database import get_db
         db = await get_db()
@@ -55,7 +58,7 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
         plant_name = plant['display_name']
         
         result = await analyze_plant_image(
-            file_data.read(), 
+            image_bytes,  # ИСПРАВЛЕНО: передаем bytes напрямую
             previous_state=previous_state
         )
         
@@ -105,7 +108,7 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
             await state.clear()
             
     except Exception as e:
-        logger.error(f"Ошибка обновления состояния: {e}")
+        logger.error(f"Ошибка обновления состояния: {e}", exc_info=True)
         await message.reply("❌ Техническая ошибка")
         await state.clear()
 
@@ -124,10 +127,15 @@ async def handle_photo(message: types.Message, bot):
         
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
-        file_data = await bot.download_file(file.file_path)
+        
+        # ИСПРАВЛЕНО: используем bot.download() вместо bot.download_file()
+        # Это гарантирует получение bytes напрямую в aiogram 3.x
+        image_bytes = await bot.download(file)
         
         user_question = message.caption if message.caption else None
-        result = await analyze_plant_image(file_data.read(), user_question)
+        
+        # ИСПРАВЛЕНО: передаем bytes напрямую
+        result = await analyze_plant_image(image_bytes, user_question)
         
         await processing_msg.delete()
         
@@ -170,6 +178,6 @@ async def handle_photo(message: types.Message, bot):
             await message.reply("❌ Ошибка анализа", reply_markup=simple_back_menu())
             
     except Exception as e:
-        logger.error(f"Ошибка обработки фото: {e}")
+        logger.error(f"Ошибка обработки фото: {e}", exc_info=True)
         from keyboards.main_menu import simple_back_menu
         await message.reply("❌ Техническая ошибка", reply_markup=simple_back_menu())
