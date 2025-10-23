@@ -330,37 +330,35 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_diary_growing_plant_id ON growth_diary (growing_plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback (user_id)")
 
-    # В конце метода create_tables, после всех await conn.execute(...)
+            # === МИГРАЦИЯ ДЛЯ СИСТЕМЫ СТАТИСТИКИ ===
+            logger.info("📊 Применение миграции для системы статистики...")
 
-# === МИГРАЦИЯ ДЛЯ СИСТЕМЫ СТАТИСТИКИ ===
-logger.info("📊 Применение миграции для системы статистики...")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity TIMESTAMP")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_last_activity ON users(last_activity DESC)")
 
-await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity TIMESTAMP")
-await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_last_activity ON users(last_activity DESC)")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_stats (
+                    id SERIAL PRIMARY KEY,
+                    stat_date DATE UNIQUE NOT NULL,
+                    total_users INTEGER NOT NULL DEFAULT 0,
+                    new_users INTEGER NOT NULL DEFAULT 0,
+                    active_users INTEGER NOT NULL DEFAULT 0,
+                    users_watered INTEGER NOT NULL DEFAULT 0,
+                    users_added_plants INTEGER NOT NULL DEFAULT 0,
+                    total_waterings INTEGER NOT NULL DEFAULT 0,
+                    total_plants_added INTEGER NOT NULL DEFAULT 0,
+                    analyses_count INTEGER NOT NULL DEFAULT 0,
+                    questions_count INTEGER NOT NULL DEFAULT 0,
+                    growing_started INTEGER NOT NULL DEFAULT 0,
+                    feedback_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-await conn.execute("""
-    CREATE TABLE IF NOT EXISTS daily_stats (
-        id SERIAL PRIMARY KEY,
-        stat_date DATE UNIQUE NOT NULL,
-        total_users INTEGER NOT NULL DEFAULT 0,
-        new_users INTEGER NOT NULL DEFAULT 0,
-        active_users INTEGER NOT NULL DEFAULT 0,
-        users_watered INTEGER NOT NULL DEFAULT 0,
-        users_added_plants INTEGER NOT NULL DEFAULT 0,
-        total_waterings INTEGER NOT NULL DEFAULT 0,
-        total_plants_added INTEGER NOT NULL DEFAULT 0,
-        analyses_count INTEGER NOT NULL DEFAULT 0,
-        questions_count INTEGER NOT NULL DEFAULT 0,
-        growing_started INTEGER NOT NULL DEFAULT 0,
-        feedback_count INTEGER NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-""")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(stat_date DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_created ON daily_stats(created_at DESC)")
 
-await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(stat_date DESC)")
-await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_created ON daily_stats(created_at DESC)")
-
-logger.info("✅ Миграция для системы статистики применена")
+            logger.info("✅ Миграция для системы статистики применена")
     
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
         """Извлекает название растения из текста анализа"""
