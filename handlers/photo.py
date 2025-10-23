@@ -1,4 +1,5 @@
 import logging
+from io import BytesIO
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
@@ -40,9 +41,14 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         
-        # ИСПРАВЛЕНО: используем bot.download() вместо bot.download_file()
-        # Это гарантирует получение bytes напрямую в aiogram 3.x
-        image_bytes = await bot.download(file)
+        # ИСПРАВЛЕНО: правильная обработка bot.download()
+        image_data = await bot.download(file)
+        
+        # Конвертируем в bytes если получили BytesIO
+        if isinstance(image_data, BytesIO):
+            image_bytes = image_data.getvalue()
+        else:
+            image_bytes = image_data
         
         from database import get_db
         db = await get_db()
@@ -58,7 +64,7 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
         plant_name = plant['display_name']
         
         result = await analyze_plant_image(
-            image_bytes,  # ИСПРАВЛЕНО: передаем bytes напрямую
+            image_bytes,
             previous_state=previous_state
         )
         
@@ -128,13 +134,18 @@ async def handle_photo(message: types.Message, bot):
         photo = message.photo[-1]
         file = await bot.get_file(photo.file_id)
         
-        # ИСПРАВЛЕНО: используем bot.download() вместо bot.download_file()
-        # Это гарантирует получение bytes напрямую в aiogram 3.x
-        image_bytes = await bot.download(file)
+        # ИСПРАВЛЕНО: правильная обработка bot.download()
+        # В aiogram 3.x может вернуть BytesIO или bytes в зависимости от версии
+        image_data = await bot.download(file)
+        
+        # Конвертируем в bytes если получили BytesIO
+        if isinstance(image_data, BytesIO):
+            image_bytes = image_data.getvalue()
+        else:
+            image_bytes = image_data
         
         user_question = message.caption if message.caption else None
         
-        # ИСПРАВЛЕНО: передаем bytes напрямую
         result = await analyze_plant_image(image_bytes, user_question)
         
         await processing_msg.delete()
