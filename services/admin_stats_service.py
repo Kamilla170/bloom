@@ -44,9 +44,27 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 WHERE created_at >= $1 AND created_at < $2
             """, target_date_start, target_date_end)
             
+            # ИСПРАВЛЕНИЕ: Считаем активных по реальным действиям
             active_users = await conn.fetchval("""
-                SELECT COUNT(*) FROM users 
-                WHERE last_activity >= $1 AND last_activity < $2
+                SELECT COUNT(DISTINCT user_id) FROM (
+                    SELECT user_id FROM plants 
+                    WHERE saved_date >= $1 AND saved_date < $2
+                    UNION
+                    SELECT user_id FROM plant_qa_history 
+                    WHERE question_date >= $1 AND question_date < $2
+                    UNION
+                    SELECT user_id FROM plant_analyses_full 
+                    WHERE analysis_date >= $1 AND analysis_date < $2
+                    UNION
+                    SELECT user_id FROM care_history 
+                    WHERE action_date >= $1 AND action_date < $2
+                    UNION
+                    SELECT user_id FROM growing_plants 
+                    WHERE started_date >= $1 AND started_date < $2
+                    UNION
+                    SELECT user_id FROM feedback 
+                    WHERE created_at >= $1 AND created_at < $2
+                ) active_users_union
             """, target_date_start, target_date_end)
             
             # 2. РАСТЕНИЯ
@@ -99,8 +117,7 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 WHERE created_at >= $1 AND created_at < $2
             """, target_date_start, target_date_end)
             
-            # 5. ТОП-3 АКТИВНЫХ (по количеству обновлений last_activity)
-            # Приближенный подсчет через количество действий
+            # 5. ТОП-3 АКТИВНЫХ (по количеству действий)
             top_active = await conn.fetch("""
                 WITH user_actions AS (
                     SELECT user_id, COUNT(*) as action_count
@@ -110,6 +127,12 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                         SELECT user_id FROM plant_qa_history WHERE question_date >= $1 AND question_date < $2
                         UNION ALL
                         SELECT user_id FROM plant_analyses_full WHERE analysis_date >= $1 AND analysis_date < $2
+                        UNION ALL
+                        SELECT user_id FROM care_history WHERE action_date >= $1 AND action_date < $2
+                        UNION ALL
+                        SELECT user_id FROM growing_plants WHERE started_date >= $1 AND started_date < $2
+                        UNION ALL
+                        SELECT user_id FROM feedback WHERE created_at >= $1 AND created_at < $2
                     ) actions
                     GROUP BY user_id
                 )
@@ -126,11 +149,26 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
                 SELECT COUNT(*) FROM users WHERE created_at < $1
             """, week_ago)
             
+            # ИСПРАВЛЕНИЕ: Считаем retention по реальной активности
             active_from_week_ago = await conn.fetchval("""
-                SELECT COUNT(DISTINCT user_id) FROM users 
-                WHERE created_at < $1 
-                AND last_activity >= $2 AND last_activity < $3
-            """, week_ago, target_date_start, target_date_end)
+                SELECT COUNT(DISTINCT user_id) FROM (
+                    SELECT user_id FROM plants 
+                    WHERE saved_date >= $1 AND saved_date < $2
+                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    UNION
+                    SELECT user_id FROM plant_qa_history 
+                    WHERE question_date >= $1 AND question_date < $2
+                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    UNION
+                    SELECT user_id FROM plant_analyses_full 
+                    WHERE analysis_date >= $1 AND analysis_date < $2
+                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                    UNION
+                    SELECT user_id FROM care_history 
+                    WHERE action_date >= $1 AND action_date < $2
+                    AND user_id IN (SELECT user_id FROM users WHERE created_at < $3)
+                ) retention_users
+            """, target_date_start, target_date_end, week_ago)
             
             retention_7day = 0
             if users_week_ago > 0:
