@@ -264,6 +264,7 @@ class PlantDatabase:
                 )
             """)
             
+            # ИСПРАВЛЕНО: Таблица reminders с правильным UNIQUE constraint
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS reminders (
                     id SERIAL PRIMARY KEY,
@@ -358,7 +359,46 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(stat_date DESC)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_created ON daily_stats(created_at DESC)")
 
-            logger.info("✅ Миграция для системы статистики применена")
+            # === КРИТИЧНАЯ МИГРАЦИЯ ДЛЯ УНИКАЛЬНОСТИ НАПОМИНАНИЙ ===
+            logger.info("🔔 Применение миграции для уникальности напоминаний...")
+            
+            # Проверяем, существует ли уже constraint
+            constraint_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_constraint 
+                    WHERE conname = 'reminders_unique_active'
+                )
+            """)
+            
+            if not constraint_exists:
+                # Сначала удаляем дубликаты, оставляя самые свежие
+                await conn.execute("""
+                    DELETE FROM reminders a USING (
+                        SELECT MAX(id) as id, user_id, plant_id, reminder_type
+                        FROM reminders 
+                        WHERE is_active = TRUE
+                        GROUP BY user_id, plant_id, reminder_type
+                        HAVING COUNT(*) > 1
+                    ) b
+                    WHERE a.user_id = b.user_id 
+                    AND a.plant_id = b.plant_id 
+                    AND a.reminder_type = b.reminder_type
+                    AND a.is_active = TRUE
+                    AND a.id < b.id
+                """)
+                
+                # Создаем частичный уникальный индекс (только для is_active = TRUE)
+                await conn.execute("""
+                    CREATE UNIQUE INDEX reminders_unique_active 
+                    ON reminders (user_id, plant_id, reminder_type) 
+                    WHERE is_active = TRUE AND plant_id IS NOT NULL
+                """)
+                
+                logger.info("✅ Уникальный индекс для reminders создан")
+            else:
+                logger.info("✅ Уникальный индекс для reminders уже существует")
+
+            logger.info("✅ Все миграции применены успешно")
     
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
         """Извлекает название растения из текста анализа"""
@@ -732,17 +772,19 @@ class PlantDatabase:
                 WHERE user_id = $1 AND id = $2
             """, user_id, plant_id)
     
-    # === МЕТОДЫ ДЛЯ НАПОМИНАНИЙ ===
+    # === МЕТОДЫ ДЛЯ НАПОМИНАНИЙ (УПРОЩЕННЫЕ) ===
     
     async def create_reminder(self, user_id: int, plant_id: int, reminder_type: str, next_date: datetime):
-        """Создать напоминание"""
+        """Создать напоминание (базовый метод, использует логику из reminder_service)"""
         async with self.pool.acquire() as conn:
+            # Деактивируем старые
             await conn.execute("""
                 UPDATE reminders 
                 SET is_active = FALSE 
                 WHERE user_id = $1 AND plant_id = $2 AND reminder_type = $3 AND is_active = TRUE
             """, user_id, plant_id, reminder_type)
             
+            # Создаем новое
             await conn.execute("""
                 INSERT INTO reminders (user_id, plant_id, reminder_type, next_date)
                 VALUES ($1, $2, $3, $4)
