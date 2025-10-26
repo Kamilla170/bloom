@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from database import get_db
 from keyboards.main_menu import main_menu
 from states.user_states import PlantStates
+from config import ADMIN_USER_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -218,11 +219,142 @@ async def stats_command(message: types.Message):
         await message.answer("❌ Ошибка загрузки статистики", reply_markup=main_menu())
 
 
+@router.message(Command("test_reminders"))
+async def test_reminders_command(message: types.Message):
+    """Тестовая команда для принудительной проверки напоминаний (только для админов)"""
+    user_id = message.from_user.id
+    
+    # Проверка прав администратора
+    if user_id not in ADMIN_USER_IDS:
+        await message.answer(
+            f"❌ Эта команда доступна только администраторам\n\n"
+            f"🔑 Ваш ID: <code>{user_id}</code>\n"
+            f"👥 Список админов: {ADMIN_USER_IDS}",
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        status_msg = await message.answer("🔄 <b>Запускаю проверку напоминаний...</b>", parse_mode="HTML")
+        
+        from services.reminder_service import check_and_send_reminders
+        
+        # Запускаем проверку напоминаний
+        await check_and_send_reminders(message.bot)
+        
+        await status_msg.edit_text(
+            "✅ <b>Проверка завершена!</b>\n\n"
+            "📝 Проверьте логи сервера для деталей:\n"
+            "• Сколько напоминаний найдено\n"
+            "• Сколько отправлено\n"
+            "• Были ли ошибки\n\n"
+            "💡 Если напоминания не пришли - проверьте базу данных командой /check_reminders",
+            parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка тестовой проверки: {e}", exc_info=True)
+        await message.answer(
+            f"❌ <b>Ошибка при проверке:</b>\n\n<code>{str(e)}</code>\n\n"
+            "📝 Подробности в логах сервера",
+            parse_mode="HTML"
+        )
+
+
+@router.message(Command("check_reminders"))
+async def check_reminders_status_command(message: types.Message):
+    """Проверить статус напоминаний в базе данных (только для админов)"""
+    user_id = message.from_user.id
+    
+    # Проверка прав администратора
+    if user_id not in ADMIN_USER_IDS:
+        await message.answer(
+            f"❌ Эта команда доступна только администраторам\n\n"
+            f"🔑 Ваш ID: <code>{user_id}</code>",
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        db = await get_db()
+        from utils.time_utils import get_moscow_now
+        moscow_now = get_moscow_now()
+        moscow_date = moscow_now.date()
+        
+        async with db.pool.acquire() as conn:
+            # Проверяем общую статистику напоминаний
+            total_reminders = await conn.fetchval("""
+                SELECT COUNT(*) FROM reminders 
+                WHERE reminder_type = 'watering' AND is_active = TRUE
+            """)
+            
+            # Проверяем напоминания на сегодня
+            today_reminders = await conn.fetch("""
+                SELECT p.id, p.user_id,
+                       COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as display_name,
+                       r.next_date, r.last_sent, r.is_active,
+                       us.reminder_enabled as user_enabled,
+                       p.reminder_enabled as plant_enabled
+                FROM plants p
+                JOIN reminders r ON r.plant_id = p.id AND r.reminder_type = 'watering'
+                LEFT JOIN user_settings us ON p.user_id = us.user_id
+                WHERE r.next_date::date <= $1::date
+                ORDER BY r.next_date DESC
+                LIMIT 10
+            """, moscow_date)
+            
+            # Проверяем просроченные
+            overdue = await conn.fetchval("""
+                SELECT COUNT(*) FROM reminders r
+                WHERE r.reminder_type = 'watering' 
+                AND r.is_active = TRUE
+                AND r.next_date::date < $1::date
+                AND (r.last_sent IS NULL OR r.last_sent::date < $1::date)
+            """, moscow_date)
+        
+        response = f"""
+📊 <b>СТАТУС НАПОМИНАНИЙ</b>
+
+🕐 <b>Текущее время (МСК):</b> {moscow_now.strftime('%d.%m.%Y %H:%M')}
+📅 <b>Текущая дата:</b> {moscow_date}
+
+📈 <b>Общая статистика:</b>
+• Всего активных напоминаний: {total_reminders}
+• Просроченных: {overdue}
+
+📋 <b>Напоминания на сегодня и раньше (топ-10):</b>
+"""
+        
+        if today_reminders:
+            for i, rem in enumerate(today_reminders, 1):
+                next_date = rem['next_date'].date() if rem['next_date'] else 'НЕ УСТАНОВЛЕНО'
+                last_sent = rem['last_sent'].date() if rem['last_sent'] else 'НЕ ОТПРАВЛЯЛОСЬ'
+                active = '✅' if rem['is_active'] else '❌'
+                user_enabled = '✅' if rem['user_enabled'] else '❌'
+                plant_enabled = '✅' if rem['plant_enabled'] else '❌'
+                
+                response += f"\n{i}. {rem['display_name']}\n"
+                response += f"   User: {rem['user_id']}, Plant ID: {rem['id']}\n"
+                response += f"   Next: {next_date}, Last: {last_sent}\n"
+                response += f"   Active: {active}, UserEnabled: {user_enabled}, PlantEnabled: {plant_enabled}\n"
+        else:
+            response += "\n<i>Нет напоминаний на эту дату</i>\n"
+        
+        response += f"\n💡 Используйте /test_reminders для принудительной проверки"
+        
+        await message.answer(response, parse_mode="HTML")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки статуса: {e}", exc_info=True)
+        await message.answer(
+            f"❌ <b>Ошибка:</b>\n\n<code>{str(e)}</code>",
+            parse_mode="HTML"
+        )
+
+
 @router.message(Command("test_stats"))
 async def test_stats_command(message: types.Message):
     """Тестовая команда для проверки системы статистики (только для админов)"""
-    from config import ADMIN_USER_IDS
-    
     user_id = message.from_user.id
     
     # Проверка прав администратора
