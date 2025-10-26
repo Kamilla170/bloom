@@ -150,7 +150,7 @@ def setup_scheduler():
     logger.info(f"🌍 Часовой пояс: {MOSCOW_TZ}")
     
     # Ежедневные напоминания о поливе в 9:00 МСК
-    job1 = scheduler.add_job(
+    scheduler.add_job(
         lambda: check_and_send_reminders(bot),
         'cron',
         hour=9,
@@ -159,10 +159,9 @@ def setup_scheduler():
         replace_existing=True
     )
     logger.info(f"✅ Задача 'reminder_check' добавлена: ежедневно в 09:00 МСК")
-    logger.info(f"   Следующий запуск: {job1.next_run_time}")
     
     # Месячные напоминания об обновлении фото в 10:00 МСК
-    job2 = scheduler.add_job(
+    scheduler.add_job(
         lambda: check_monthly_photo_reminders(bot),
         'cron',
         hour=10,
@@ -171,10 +170,9 @@ def setup_scheduler():
         replace_existing=True
     )
     logger.info(f"✅ Задача 'monthly_reminder_check' добавлена: ежедневно в 10:00 МСК")
-    logger.info(f"   Следующий запуск: {job2.next_run_time}")
     
     # Ежедневная статистика для администраторов в 9:00 МСК
-    job3 = scheduler.add_job(
+    scheduler.add_job(
         lambda: send_daily_report_to_admins(bot),
         'cron',
         hour=9,
@@ -183,7 +181,6 @@ def setup_scheduler():
         replace_existing=True
     )
     logger.info(f"✅ Задача 'daily_stats_report' добавлена: ежедневно в 09:00 МСК")
-    logger.info(f"   Следующий запуск: {job3.next_run_time}")
     
     # КРИТИЧЕСКИ ВАЖНО: Запускаем планировщик
     scheduler.start()
@@ -195,11 +192,13 @@ def setup_scheduler():
         logger.info("✅ Статус планировщика: РАБОТАЕТ")
         logger.info(f"📊 Активных задач: {len(scheduler.get_jobs())}")
         
-        # Выводим список всех задач
+        # Выводим список всех задач С ВРЕМЕНЕМ после запуска
         logger.info("")
         logger.info("📋 СПИСОК АКТИВНЫХ ЗАДАЧ:")
         for job in scheduler.get_jobs():
-            logger.info(f"   • {job.id}: следующий запуск {job.next_run_time}")
+            # Теперь next_run_time доступен после start()
+            next_run = job.next_run_time.strftime('%d.%m.%Y %H:%M:%S') if job.next_run_time else 'не запланировано'
+            logger.info(f"   • {job.id}: следующий запуск {next_run}")
     else:
         logger.error("❌ ПЛАНИРОВЩИК НЕ ЗАПУСТИЛСЯ!")
     
