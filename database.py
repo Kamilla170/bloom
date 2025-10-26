@@ -365,8 +365,8 @@ class PlantDatabase:
             # Проверяем, существует ли уже constraint
             constraint_exists = await conn.fetchval("""
                 SELECT EXISTS (
-                    SELECT 1 FROM pg_constraint 
-                    WHERE conname = 'reminders_unique_active'
+                    SELECT 1 FROM pg_indexes 
+                    WHERE indexname = 'reminders_unique_active'
                 )
             """)
             
@@ -387,9 +387,9 @@ class PlantDatabase:
                     AND a.id < b.id
                 """)
                 
-                # Создаем частичный уникальный индекс (только для is_active = TRUE)
+                # 🔧 ИСПРАВЛЕНИЕ: Добавлен IF NOT EXISTS
                 await conn.execute("""
-                    CREATE UNIQUE INDEX reminders_unique_active 
+                    CREATE UNIQUE INDEX IF NOT EXISTS reminders_unique_active 
                     ON reminders (user_id, plant_id, reminder_type) 
                     WHERE is_active = TRUE AND plant_id IS NOT NULL
                 """)
