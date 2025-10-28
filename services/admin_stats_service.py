@@ -1,15 +1,13 @@
 """
 Admin Statistics Service
-Сбор и отправка ежедневной статистики администраторам
+Сбор и хранение статистики для дэшборда
 """
 
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from aiogram import Bot
 
 from database import get_db
-from config import ADMIN_USER_IDS
 from utils.time_utils import get_moscow_now
 
 logger = logging.getLogger(__name__)
@@ -206,6 +204,7 @@ async def collect_daily_stats(target_date: datetime = None) -> Dict:
             ]
         }
         
+        logger.info(f"✅ Статистика за {target_date_start.date()} собрана")
         return stats
         
     except Exception as e:
@@ -362,128 +361,3 @@ def calculate_trend(current: int, previous: Optional[int]) -> str:
         return f"+{diff_percent:.1f}% ⬆️"
     else:
         return f"{diff_percent:.1f}% ⬇️"
-
-
-def format_admin_report(stats: Dict, comparisons: Dict) -> str:
-    """
-    Форматировать красивый отчет для администраторов
-    
-    Args:
-        stats: текущая статистика
-        comparisons: данные для сравнения
-        
-    Returns:
-        Форматированный текст отчета
-    """
-    date_str = stats['date'].strftime('%d.%m.%Y')
-    
-    # Проценты
-    total = stats['users']['total']
-    active_percent = (stats['users']['active'] / total * 100) if total > 0 else 0
-    inactive_percent = 100 - active_percent
-    added_plants_percent = (stats['plants']['users_added'] / total * 100) if total > 0 else 0
-    watered_percent = (stats['plants']['users_watered'] / total * 100) if total > 0 else 0
-    
-    # Тренды
-    yesterday = comparisons.get('yesterday')
-    week_ago = comparisons.get('week_ago')
-    
-    new_users_trend_day = calculate_trend(stats['users']['new'], yesterday['new_users'] if yesterday else None)
-    active_trend_day = calculate_trend(stats['users']['active'], yesterday['active_users'] if yesterday else None)
-    watered_trend_day = calculate_trend(stats['plants']['users_watered'], yesterday['users_watered'] if yesterday else None)
-    
-    new_users_trend_week = calculate_trend(stats['users']['new'], week_ago['new_users'] if week_ago else None)
-    active_trend_week = calculate_trend(stats['users']['active'], week_ago['active_users'] if week_ago else None)
-    
-    # Retention статус
-    retention = stats['users']['retention_7day']
-    if retention >= 40:
-        retention_status = "отлично ✅"
-    elif retention >= 25:
-        retention_status = "хорошо 👍"
-    elif retention >= 15:
-        retention_status = "норма ➡️"
-    else:
-        retention_status = "низкий ⚠️"
-    
-    report = f"""
-📊 <b>ЕЖЕДНЕВНЫЙ ОТЧЕТ - {date_str}</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-👥 <b>ПОЛЬЗОВАТЕЛИ</b>
-├─ Всего в базе: <b>{stats['users']['total']:,}</b>
-├─ Новых за день: <b>{stats['users']['new']}</b> {new_users_trend_day}
-│  └─ vs неделю назад: {new_users_trend_week}
-├─ Активных вчера: <b>{stats['users']['active']}</b> ({active_percent:.1f}%) {active_trend_day}
-│  └─ vs неделю назад: {active_trend_week}
-│  └─ Неактивных: {stats['users']['inactive']} ({inactive_percent:.1f}%)
-└─ 7-day retention: <b>{retention:.1f}%</b> ({retention_status})
-
-🌱 <b>РАСТЕНИЯ</b>
-├─ Добавили растение: <b>{stats['plants']['users_added']}</b> чел ({added_plants_percent:.1f}%)
-│  └─ Всего растений: {stats['plants']['total_added']} шт {watered_trend_day}
-├─ Полили: <b>{stats['plants']['users_watered']}</b> чел ({watered_percent:.1f}%)
-│  └─ Всего поливов: {stats['plants']['total_waterings']} действий
-└─ Выращивание с нуля: <b>{stats['plants']['growing_started']}</b> чел
-
-🔍 <b>АКТИВНОСТЬ</b>
-├─ Анализов сделано: <b>{stats['activity']['analyses']}</b>
-├─ Вопросов задано: <b>{stats['activity']['questions']}</b>
-├─ Обновлено фото: <b>{stats['activity']['photo_updates']}</b>
-└─ Обратной связи: <b>{stats['activity']['feedback']}</b>
-"""
-    
-    # ТОП-3 активных
-    if stats['top_active']:
-        report += "\n🏆 <b>ТОП-3 АКТИВНЫХ</b>\n"
-        for i, user in enumerate(stats['top_active'], 1):
-            username = user['username']
-            if not username.startswith('@'):
-                username = f"@{username}"
-            report += f"{i}. {username} - {user['actions']} действий\n"
-    
-    report += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    
-    return report
-
-
-async def send_daily_report_to_admins(bot: Bot):
-    """
-    Собрать статистику за вчера и отправить всем администраторам
-    """
-    try:
-        logger.info("📊 Начинаем сбор ежедневной статистики...")
-        
-        # Собираем статистику за вчера
-        yesterday = get_moscow_now() - timedelta(days=1)
-        stats = await collect_daily_stats(yesterday)
-        
-        if not stats:
-            logger.error("❌ Не удалось собрать статистику")
-            return
-        
-        # Сохраняем в БД для трендов
-        await save_daily_stats(stats)
-        
-        # Получаем данные для сравнения
-        comparisons = await get_comparison_stats(yesterday)
-        
-        # Форматируем отчет
-        report = format_admin_report(stats, comparisons)
-        
-        # Отправляем всем администраторам
-        for admin_id in ADMIN_USER_IDS:
-            try:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=report,
-                    parse_mode="HTML"
-                )
-                logger.info(f"✅ Отчет отправлен администратору {admin_id}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки администратору {admin_id}: {e}")
-        
-        logger.info("✅ Ежедневная статистика успешно отправлена")
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка отправки статистики: {e}", exc_info=True)
