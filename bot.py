@@ -42,34 +42,6 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
 
 
-# ✅ ИСПРАВЛЕНИЕ: Создаем wrapper-функции для async задач
-def run_daily_reminders():
-    """Wrapper для check_and_send_reminders"""
-    try:
-        asyncio.create_task(check_and_send_reminders(bot))
-        logger.info("✅ Задача check_and_send_reminders запущена")
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска check_and_send_reminders: {e}")
-
-
-def run_monthly_reminders():
-    """Wrapper для check_monthly_photo_reminders"""
-    try:
-        asyncio.create_task(check_monthly_photo_reminders(bot))
-        logger.info("✅ Задача check_monthly_photo_reminders запущена")
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска check_monthly_photo_reminders: {e}")
-
-
-def run_daily_stats():
-    """Wrapper для send_daily_report_to_admins"""
-    try:
-        asyncio.create_task(send_daily_report_to_admins(bot))
-        logger.info("✅ Задача send_daily_report_to_admins запущена")
-    except Exception as e:
-        logger.error(f"❌ Ошибка запуска send_daily_report_to_admins: {e}")
-
-
 async def on_startup():
     """Инициализация при запуске"""
     try:
@@ -177,13 +149,14 @@ def setup_scheduler():
     logger.info(f"🕐 Текущее время (МСК): {moscow_now.strftime('%d.%m.%Y %H:%M:%S')}")
     logger.info(f"🌍 Часовой пояс: {MOSCOW_TZ}")
     
-    # ✅ ИСПРАВЛЕНО: Используем wrapper-функции вместо lambda
+    # ✅ ИСПРАВЛЕНО: AsyncIOScheduler работает с async функциями напрямую
     # Ежедневные напоминания о поливе в 9:00 МСК
     scheduler.add_job(
-        run_daily_reminders,  # ✅ Без скобок! Передаем функцию, не вызываем её
+        check_and_send_reminders,  # ✅ async функция напрямую
         'cron',
         hour=9,
         minute=0,
+        args=[bot],  # ✅ Передаем bot через args
         id='reminder_check',
         replace_existing=True
     )
@@ -191,10 +164,11 @@ def setup_scheduler():
     
     # Месячные напоминания об обновлении фото в 10:00 МСК
     scheduler.add_job(
-        run_monthly_reminders,  # ✅ Без скобок!
+        check_monthly_photo_reminders,  # ✅ async функция напрямую
         'cron',
         hour=10,
         minute=0,
+        args=[bot],  # ✅ Передаем bot через args
         id='monthly_reminder_check',
         replace_existing=True
     )
@@ -202,10 +176,11 @@ def setup_scheduler():
     
     # Ежедневная статистика для администраторов в 9:00 МСК
     scheduler.add_job(
-        run_daily_stats,  # ✅ Без скобок!
+        send_daily_report_to_admins,  # ✅ async функция напрямую
         'cron',
         hour=9,
         minute=0,
+        args=[bot],  # ✅ Передаем bot через args
         id='daily_stats_report',
         replace_existing=True
     )
@@ -273,7 +248,7 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI", 
-        "version": "5.2 - Fixed Reminders",
+        "version": "5.3 - Fixed Scheduler",
         "time_msk": moscow_now.strftime('%Y-%m-%d %H:%M:%S'),
         "timezone": str(MOSCOW_TZ),
         "scheduler": {
@@ -287,7 +262,7 @@ async def health_check(request):
 async def main():
     """Main функция"""
     try:
-        logger.info("🚀 Запуск Bloom AI v5.2 (Fixed Reminders)...")
+        logger.info("🚀 Запуск Bloom AI v5.3 (Fixed Scheduler)...")
         
         await on_startup()
         
@@ -305,7 +280,7 @@ async def main():
             
             logger.info("")
             logger.info("=" * 70)
-            logger.info(f"🚀 BLOOM AI v5.2 УСПЕШНО ЗАПУЩЕН")
+            logger.info(f"🚀 BLOOM AI v5.3 УСПЕШНО ЗАПУЩЕН")
             logger.info(f"🌐 Порт: {PORT}")
             logger.info(f"📡 Webhook: {WEBHOOK_URL}/webhook")
             logger.info(f"❤️ Health check: {WEBHOOK_URL}/health")
@@ -322,7 +297,7 @@ async def main():
             # Polling mode
             logger.info("")
             logger.info("=" * 70)
-            logger.info("🤖 BLOOM AI v5.2 В РЕЖИМЕ POLLING")
+            logger.info("🤖 BLOOM AI v5.3 В РЕЖИМЕ POLLING")
             logger.info("⏳ Ожидание сообщений от пользователей...")
             logger.info("=" * 70)
             
