@@ -41,6 +41,66 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
 
 
+async def fix_inactive_reminders():
+    """🔧 ОДНОРАЗОВЫЙ ФИКС: активировать неактивные напоминания"""
+    try:
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("🔧 ПРОВЕРКА НЕАКТИВНЫХ НАПОМИНАНИЙ")
+        logger.info("=" * 70)
+        
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            # Считаем сколько неактивных
+            inactive_count = await conn.fetchval("""
+                SELECT COUNT(*) 
+                FROM reminders r
+                JOIN plants p ON r.plant_id = p.id
+                WHERE r.reminder_type = 'watering'
+                  AND r.is_active = FALSE
+                  AND p.plant_type = 'regular'
+                  AND p.reminder_enabled = TRUE
+            """)
+            
+            if inactive_count > 0:
+                logger.warning(f"⚠️ НАЙДЕНО {inactive_count} НЕАКТИВНЫХ НАПОМИНАНИЙ!")
+                logger.info("🔧 Активирую напоминания...")
+                
+                # Активируем ВСЕ неактивные напоминания о поливе
+                result = await conn.execute("""
+                    UPDATE reminders r
+                    SET is_active = TRUE
+                    FROM plants p
+                    WHERE r.plant_id = p.id
+                      AND r.reminder_type = 'watering'
+                      AND r.is_active = FALSE
+                      AND p.plant_type = 'regular'
+                      AND p.reminder_enabled = TRUE
+                """)
+                
+                # Проверяем результат
+                active_count = await conn.fetchval("""
+                    SELECT COUNT(*) 
+                    FROM reminders 
+                    WHERE reminder_type = 'watering' 
+                      AND is_active = TRUE
+                """)
+                
+                logger.info(f"✅ АКТИВИРОВАНО {inactive_count} НАПОМИНАНИЙ!")
+                logger.info(f"📊 Всего активных напоминаний сейчас: {active_count}")
+                logger.info("")
+                logger.info("💡 Теперь /test_reminders должен отправить все напоминания!")
+            else:
+                logger.info("✅ Все напоминания уже активны - фикс не требуется")
+        
+        logger.info("=" * 70)
+        logger.info("")
+                
+    except Exception as e:
+        logger.error(f"❌ Ошибка фикса напоминаний: {e}", exc_info=True)
+        # НЕ прерываем запуск бота - это не критично
+
+
 async def on_startup():
     """Инициализация при запуске"""
     try:
@@ -54,6 +114,9 @@ async def on_startup():
         # Инициализация базы данных
         await init_database()
         logger.info("✅ База данных инициализирована")
+        
+        # 🔧 ОДНОРАЗОВЫЙ ФИКС НАПОМИНАНИЙ
+        await fix_inactive_reminders()
         
         # Удаление старого webhook
         logger.info("🔧 Удаление старого webhook...")
@@ -234,7 +297,7 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI", 
-        "version": "5.4 - Stats Removed",
+        "version": "5.4 - Stats Removed + Reminders Fix",
         "time_msk": moscow_now.strftime('%Y-%m-%d %H:%M:%S'),
         "timezone": str(MOSCOW_TZ),
         "scheduler": {
@@ -248,7 +311,7 @@ async def health_check(request):
 async def main():
     """Main функция"""
     try:
-        logger.info("🚀 Запуск Bloom AI v5.4 (Stats Removed)...")
+        logger.info("🚀 Запуск Bloom AI v5.4 (Stats Removed + Reminders Fix)...")
         
         await on_startup()
         
