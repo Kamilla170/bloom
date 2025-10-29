@@ -41,109 +41,6 @@ dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
 
 
-async def fix_inactive_reminders():
-    """🔧 ОДНОРАЗОВЫЙ ФИКС: очистка дубликатов и активация напоминаний"""
-    try:
-        logger.info("")
-        logger.info("=" * 70)
-        logger.info("🔧 ПРОВЕРКА И ОЧИСТКА НАПОМИНАНИЙ")
-        logger.info("=" * 70)
-        
-        db = await get_db()
-        async with db.pool.acquire() as conn:
-            # ШАГ 1: Считаем дубликаты
-            duplicates = await conn.fetchval("""
-                SELECT COUNT(*) 
-                FROM (
-                    SELECT user_id, plant_id, reminder_type, COUNT(*) as cnt
-                    FROM reminders
-                    WHERE reminder_type = 'watering' AND plant_id IS NOT NULL
-                    GROUP BY user_id, plant_id, reminder_type
-                    HAVING COUNT(*) > 1
-                ) sub
-            """)
-            
-            if duplicates > 0:
-                logger.warning(f"⚠️ НАЙДЕНО {duplicates} РАСТЕНИЙ С ДУБЛИКАТАМИ НАПОМИНАНИЙ!")
-                logger.info("🧹 Удаляю дубликаты, оставляя только самое свежее напоминание...")
-                
-                # ШАГ 2: Удаляем все дубликаты, оставляя только последнее созданное
-                deleted = await conn.fetch("""
-                    DELETE FROM reminders
-                    WHERE id IN (
-                        SELECT r.id
-                        FROM reminders r
-                        INNER JOIN (
-                            SELECT user_id, plant_id, reminder_type, MAX(created_at) as max_created
-                            FROM reminders
-                            WHERE reminder_type = 'watering' AND plant_id IS NOT NULL
-                            GROUP BY user_id, plant_id, reminder_type
-                            HAVING COUNT(*) > 1
-                        ) latest
-                        ON r.user_id = latest.user_id 
-                           AND r.plant_id = latest.plant_id 
-                           AND r.reminder_type = latest.reminder_type
-                        WHERE r.created_at < latest.max_created
-                    )
-                    RETURNING id
-                """)
-                
-                deleted_count = len(deleted) if deleted else 0
-                logger.info(f"🗑️ Удалено {deleted_count} дубликатов")
-            else:
-                logger.info("✅ Дубликатов не найдено")
-            
-            # ШАГ 3: Считаем сколько неактивных осталось
-            inactive_count = await conn.fetchval("""
-                SELECT COUNT(*) 
-                FROM reminders r
-                JOIN plants p ON r.plant_id = p.id
-                WHERE r.reminder_type = 'watering'
-                  AND r.is_active = FALSE
-                  AND p.plant_type = 'regular'
-                  AND p.reminder_enabled = TRUE
-            """)
-            
-            if inactive_count > 0:
-                logger.warning(f"⚠️ НАЙДЕНО {inactive_count} НЕАКТИВНЫХ НАПОМИНАНИЙ!")
-                logger.info("🔧 Активирую напоминания...")
-                
-                # ШАГ 4: Активируем ВСЕ неактивные напоминания
-                # Теперь дубликатов нет, так что это безопасно
-                await conn.execute("""
-                    UPDATE reminders r
-                    SET is_active = TRUE
-                    FROM plants p
-                    WHERE r.plant_id = p.id
-                      AND r.reminder_type = 'watering'
-                      AND r.is_active = FALSE
-                      AND p.plant_type = 'regular'
-                      AND p.reminder_enabled = TRUE
-                """)
-                
-                # ШАГ 5: Проверяем результат
-                active_count = await conn.fetchval("""
-                    SELECT COUNT(*) 
-                    FROM reminders 
-                    WHERE reminder_type = 'watering' 
-                      AND is_active = TRUE
-                """)
-                
-                logger.info(f"✅ АКТИВИРОВАНО {inactive_count} НАПОМИНАНИЙ!")
-                logger.info(f"📊 Всего активных напоминаний сейчас: {active_count}")
-                logger.info("")
-                logger.info("💡 Теперь /test_reminders должен отправить все напоминания!")
-            else:
-                logger.info("✅ Все напоминания уже активны - фикс не требуется")
-        
-        logger.info("=" * 70)
-        logger.info("")
-                
-    except Exception as e:
-        logger.error(f"❌ Ошибка фикса напоминаний: {e}", exc_info=True)
-        # НЕ прерываем запуск бота - это не критично
-
-
 async def on_startup():
     """Инициализация при запуске"""
     try:
@@ -157,9 +54,6 @@ async def on_startup():
         # Инициализация базы данных
         await init_database()
         logger.info("✅ База данных инициализирована")
-        
-        # 🔧 ОДНОРАЗОВЫЙ ФИКС НАПОМИНАНИЙ
-        await fix_inactive_reminders()
         
         # Удаление старого webhook
         logger.info("🔧 Удаление старого webhook...")
@@ -340,7 +234,7 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI", 
-        "version": "5.4.1 - Reminders Fix + Duplicates Cleanup",
+        "version": "5.4 - Stats Removed",
         "time_msk": moscow_now.strftime('%Y-%m-%d %H:%M:%S'),
         "timezone": str(MOSCOW_TZ),
         "scheduler": {
@@ -354,7 +248,7 @@ async def health_check(request):
 async def main():
     """Main функция"""
     try:
-        logger.info("🚀 Запуск Bloom AI v5.4.1 (Reminders Fix + Duplicates Cleanup)...")
+        logger.info("🚀 Запуск Bloom AI v5.4 (Stats Removed)...")
         
         await on_startup()
         
@@ -372,7 +266,7 @@ async def main():
             
             logger.info("")
             logger.info("=" * 70)
-            logger.info(f"🚀 BLOOM AI v5.4.1 УСПЕШНО ЗАПУЩЕН")
+            logger.info(f"🚀 BLOOM AI v5.4 УСПЕШНО ЗАПУЩЕН")
             logger.info(f"🌐 Порт: {PORT}")
             logger.info(f"📡 Webhook: {WEBHOOK_URL}/webhook")
             logger.info(f"❤️ Health check: {WEBHOOK_URL}/health")
@@ -389,7 +283,7 @@ async def main():
             # Polling mode
             logger.info("")
             logger.info("=" * 70)
-            logger.info("🤖 BLOOM AI v5.4.1 В РЕЖИМЕ POLLING")
+            logger.info("🤖 BLOOM AI v5.4 В РЕЖИМЕ POLLING")
             logger.info("⏳ Ожидание сообщений от пользователей...")
             logger.info("=" * 70)
             
