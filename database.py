@@ -37,7 +37,10 @@ class PlantDatabase:
                     first_name TEXT,
                     onboarding_completed BOOLEAN DEFAULT FALSE,
                     care_style_profile JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_activity TIMESTAMP,
+                    last_action TEXT,
+                    plants_count INTEGER DEFAULT 0
                 )
             """)
             
@@ -312,6 +315,9 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_monthly_reminder TIMESTAMP")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS care_style_profile JSONB")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity TIMESTAMP")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_action TEXT")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plants_count INTEGER DEFAULT 0")
             except Exception as e:
                 logger.info(f"Колонки уже существуют: {e}")
             
@@ -330,11 +336,6 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_stages_growing_plant_id ON growth_stages (growing_plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_diary_growing_plant_id ON growth_diary (growing_plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback (user_id)")
-
-            # === МИГРАЦИЯ ДЛЯ СИСТЕМЫ СТАТИСТИКИ ===
-            logger.info("📊 Применение миграции для системы статистики...")
-
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity TIMESTAMP")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_last_activity ON users(last_activity DESC)")
 
             await conn.execute("""
@@ -387,7 +388,6 @@ class PlantDatabase:
                     AND a.id < b.id
                 """)
                 
-                # 🔧 ИСПРАВЛЕНИЕ: Добавлен IF NOT EXISTS
                 await conn.execute("""
                     CREATE UNIQUE INDEX IF NOT EXISTS reminders_unique_active 
                     ON reminders (user_id, plant_id, reminder_type) 
@@ -397,6 +397,69 @@ class PlantDatabase:
                 logger.info("✅ Уникальный индекс для reminders создан")
             else:
                 logger.info("✅ Уникальный индекс для reminders уже существует")
+
+            # === ТРИГГЕР ДЛЯ АВТОМАТИЧЕСКОГО ПОДСЧЕТА РАСТЕНИЙ ===
+            logger.info("🌱 Создание триггера для подсчета растений...")
+            
+            # Функция для обновления счетчика
+            await conn.execute("""
+                CREATE OR REPLACE FUNCTION update_plants_count()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        UPDATE users 
+                        SET plants_count = (
+                            SELECT COUNT(*) 
+                            FROM plants 
+                            WHERE user_id = NEW.user_id AND plant_type = 'regular'
+                        )
+                        WHERE user_id = NEW.user_id;
+                        RETURN NEW;
+                    ELSIF TG_OP = 'DELETE' THEN
+                        UPDATE users 
+                        SET plants_count = (
+                            SELECT COUNT(*) 
+                            FROM plants 
+                            WHERE user_id = OLD.user_id AND plant_type = 'regular'
+                        )
+                        WHERE user_id = OLD.user_id;
+                        RETURN OLD;
+                    END IF;
+                    RETURN NULL;
+                END;
+                $$ LANGUAGE plpgsql;
+            """)
+            
+            # Проверяем существование триггера
+            trigger_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_trigger 
+                    WHERE tgname = 'plants_count_trigger'
+                )
+            """)
+            
+            if not trigger_exists:
+                await conn.execute("""
+                    CREATE TRIGGER plants_count_trigger
+                    AFTER INSERT OR DELETE ON plants
+                    FOR EACH ROW
+                    EXECUTE FUNCTION update_plants_count();
+                """)
+                logger.info("✅ Триггер для подсчета растений создан")
+            else:
+                logger.info("✅ Триггер для подсчета растений уже существует")
+            
+            # Инициализируем счетчики для существующих пользователей
+            await conn.execute("""
+                UPDATE users u
+                SET plants_count = (
+                    SELECT COUNT(*) 
+                    FROM plants p 
+                    WHERE p.user_id = u.user_id AND p.plant_type = 'regular'
+                )
+                WHERE plants_count IS NULL OR plants_count = 0;
+            """)
+            logger.info("✅ Счетчики растений инициализированы")
 
             logger.info("✅ Все миграции применены успешно")
     
@@ -428,12 +491,14 @@ class PlantDatabase:
         """Добавить или обновить пользователя"""
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO users (user_id, username, first_name)
-                VALUES ($1, $2, $3)
+                INSERT INTO users (user_id, username, first_name, last_activity, last_action)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 'opened_bot')
                 ON CONFLICT (user_id) 
                 DO UPDATE SET 
                     username = EXCLUDED.username,
-                    first_name = EXCLUDED.first_name
+                    first_name = EXCLUDED.first_name,
+                    last_activity = CURRENT_TIMESTAMP,
+                    last_action = 'opened_bot'
             """, user_id, username, first_name)
             
             await conn.execute("""
@@ -441,6 +506,25 @@ class PlantDatabase:
                 VALUES ($1)
                 ON CONFLICT (user_id) DO NOTHING
             """, user_id)
+    
+    async def update_user_activity(self, user_id: int, action: str):
+        """
+        Обновить активность пользователя
+        
+        Доступные действия:
+        - opened_bot: открыл бота
+        - added_plant: добавил растение
+        - watered_plant: полил растение
+        - asked_question: задал вопрос
+        - sent_photo: отправил фото на анализ
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE users 
+                SET last_activity = CURRENT_TIMESTAMP,
+                    last_action = $2
+                WHERE user_id = $1
+            """, user_id, action)
     
     async def get_user_reminder_settings(self, user_id: int) -> Optional[Dict]:
         """Получить настройки напоминаний пользователя"""
@@ -476,6 +560,9 @@ class PlantDatabase:
                 """, plant_id)
             except Exception as e:
                 logger.error(f"Ошибка добавления в историю: {e}")
+            
+            # Обновляем активность пользователя
+            await self.update_user_activity(user_id, 'added_plant')
             
             return plant_id
     
@@ -763,6 +850,9 @@ class PlantDatabase:
                         """, plant_row['id'])
                     except Exception as e:
                         logger.error(f"Ошибка добавления в историю: {e}")
+            
+            # Обновляем активность пользователя
+            await self.update_user_activity(user_id, 'watered_plant')
     
     async def delete_plant(self, user_id: int, plant_id: int):
         """Удалить растение"""
@@ -991,6 +1081,9 @@ class PlantDatabase:
                 json.dumps(recommendations) if recommendations else None,
                 watering_advice, lighting_advice)
             
+            # Обновляем активность пользователя
+            await self.update_user_activity(user_id, 'sent_photo')
+            
             return analysis_id
     
     async def get_plant_analyses_history(self, plant_id: int, limit: int = 10) -> List[Dict]:
@@ -1016,6 +1109,9 @@ class PlantDatabase:
                 RETURNING id
             """, plant_id, user_id, question, answer,
                 json.dumps(context_used) if context_used else None)
+            
+            # Обновляем активность пользователя
+            await self.update_user_activity(user_id, 'asked_question')
             
             return qa_id
     
