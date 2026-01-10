@@ -40,7 +40,9 @@ class PlantDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_activity TIMESTAMP,
                     last_action TEXT,
-                    plants_count INTEGER DEFAULT 0
+                    plants_count INTEGER DEFAULT 0,
+                    total_waterings INTEGER DEFAULT 0,
+                    questions_asked INTEGER DEFAULT 0
                 )
             """)
             
@@ -318,6 +320,8 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity TIMESTAMP")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_action TEXT")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plants_count INTEGER DEFAULT 0")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_waterings INTEGER DEFAULT 0")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS questions_asked INTEGER DEFAULT 0")
             except Exception as e:
                 logger.info(f"Колонки уже существуют: {e}")
             
@@ -449,6 +453,86 @@ class PlantDatabase:
             else:
                 logger.info("✅ Триггер для подсчета растений уже существует")
 
+            # === ТРИГГЕР ДЛЯ ПОДСЧЕТА ПОЛИВОВ ===
+            logger.info("💧 Создание триггера для подсчета поливов...")
+            
+            await conn.execute("""
+                CREATE OR REPLACE FUNCTION update_waterings_count()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    IF TG_OP = 'INSERT' AND NEW.action_type = 'watered' THEN
+                        UPDATE users 
+                        SET total_waterings = (
+                            SELECT COUNT(*) 
+                            FROM care_history ch
+                            JOIN plants p ON ch.plant_id = p.id
+                            WHERE p.user_id = (SELECT user_id FROM plants WHERE id = NEW.plant_id)
+                            AND ch.action_type = 'watered'
+                        )
+                        WHERE user_id = (SELECT user_id FROM plants WHERE id = NEW.plant_id);
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+            """)
+            
+            trigger_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_trigger 
+                    WHERE tgname = 'waterings_count_trigger'
+                )
+            """)
+            
+            if not trigger_exists:
+                await conn.execute("""
+                    CREATE TRIGGER waterings_count_trigger
+                    AFTER INSERT ON care_history
+                    FOR EACH ROW
+                    EXECUTE FUNCTION update_waterings_count();
+                """)
+                logger.info("✅ Триггер для подсчета поливов создан")
+            else:
+                logger.info("✅ Триггер для подсчета поливов уже существует")
+
+            # === ТРИГГЕР ДЛЯ ПОДСЧЕТА ВОПРОСОВ ===
+            logger.info("❓ Создание триггера для подсчета вопросов...")
+            
+            await conn.execute("""
+                CREATE OR REPLACE FUNCTION update_questions_count()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        UPDATE users 
+                        SET questions_asked = (
+                            SELECT COUNT(*) 
+                            FROM plant_qa_history
+                            WHERE user_id = NEW.user_id
+                        )
+                        WHERE user_id = NEW.user_id;
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+            """)
+            
+            trigger_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_trigger 
+                    WHERE tgname = 'questions_count_trigger'
+                )
+            """)
+            
+            if not trigger_exists:
+                await conn.execute("""
+                    CREATE TRIGGER questions_count_trigger
+                    AFTER INSERT ON plant_qa_history
+                    FOR EACH ROW
+                    EXECUTE FUNCTION update_questions_count();
+                """)
+                logger.info("✅ Триггер для подсчета вопросов создан")
+            else:
+                logger.info("✅ Триггер для подсчета вопросов уже существует")
+
             # === ЗАПОЛНЕНИЕ СУЩЕСТВУЮЩИХ ДАННЫХ ===
             logger.info("🔄 Заполнение last_action для существующих пользователей...")
             
@@ -468,6 +552,31 @@ class PlantDatabase:
                     SELECT COUNT(*) 
                     FROM plants p 
                     WHERE p.user_id = u.user_id AND p.plant_type = 'regular'
+                )
+            """)
+            
+            logger.info("🔄 Пересчет total_waterings для существующих пользователей...")
+            
+            # Пересчитываем поливы для всех пользователей
+            await conn.execute("""
+                UPDATE users u
+                SET total_waterings = (
+                    SELECT COUNT(*) 
+                    FROM care_history ch
+                    JOIN plants p ON ch.plant_id = p.id
+                    WHERE p.user_id = u.user_id AND ch.action_type = 'watered'
+                )
+            """)
+            
+            logger.info("🔄 Пересчет questions_asked для существующих пользователей...")
+            
+            # Пересчитываем вопросы для всех пользователей
+            await conn.execute("""
+                UPDATE users u
+                SET questions_asked = (
+                    SELECT COUNT(*) 
+                    FROM plant_qa_history qa
+                    WHERE qa.user_id = u.user_id
                 )
             """)
             
