@@ -364,6 +364,25 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(stat_date DESC)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_stats_created ON daily_stats(created_at DESC)")
 
+            # === ТАБЛИЦА ДЛЯ АДМИН-ПЕРЕПИСКИ ===
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS admin_messages (
+                    id SERIAL PRIMARY KEY,
+                    from_user_id BIGINT NOT NULL,
+                    to_user_id BIGINT NOT NULL,
+                    message_text TEXT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    read BOOLEAN DEFAULT FALSE,
+                    context JSONB,
+                    FOREIGN KEY (from_user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+                    FOREIGN KEY (to_user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_to ON admin_messages(to_user_id, sent_at DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_from ON admin_messages(from_user_id, sent_at DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_unread ON admin_messages(to_user_id, read) WHERE read = FALSE")
+
             # === КРИТИЧНАЯ МИГРАЦИЯ ДЛЯ УНИКАЛЬНОСТИ НАПОМИНАНИЙ ===
             logger.info("🔔 Применение миграции для уникальности напоминаний...")
             
@@ -1327,6 +1346,173 @@ class PlantDatabase:
             row = await conn.fetchrow("""
                 SELECT * FROM plant_environment WHERE plant_id = $1
             """, plant_id)
+            
+            if row:
+                return dict(row)
+            return None
+    
+    
+    # === МЕТОДЫ ДЛЯ АДМИН-ПЕРЕПИСКИ ===
+    
+    async def send_admin_message(self, from_user_id: int, to_user_id: int, message_text: str, context: dict = None) -> int:
+        """Отправить сообщение (от админа к пользователю или наоборот)"""
+        async with self.pool.acquire() as conn:
+            message_id = await conn.fetchval("""
+                INSERT INTO admin_messages (from_user_id, to_user_id, message_text, context)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+            """, from_user_id, to_user_id, message_text, 
+                json.dumps(context) if context else None)
+            
+            return message_id
+    
+    async def get_user_messages(self, user_id: int, limit: int = 50) -> List[Dict]:
+        """Получить все сообщения пользователя (входящие и исходящие)"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    am.*,
+                    u_from.username as from_username,
+                    u_from.first_name as from_first_name,
+                    u_to.username as to_username,
+                    u_to.first_name as to_first_name
+                FROM admin_messages am
+                JOIN users u_from ON am.from_user_id = u_from.user_id
+                JOIN users u_to ON am.to_user_id = u_to.user_id
+                WHERE am.from_user_id = $1 OR am.to_user_id = $1
+                ORDER BY am.sent_at DESC
+                LIMIT $2
+            """, user_id, limit)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_unread_messages(self, user_id: int) -> List[Dict]:
+        """Получить непрочитанные сообщения для пользователя"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    am.*,
+                    u_from.username as from_username,
+                    u_from.first_name as from_first_name
+                FROM admin_messages am
+                JOIN users u_from ON am.from_user_id = u_from.user_id
+                WHERE am.to_user_id = $1 
+                AND am.read = FALSE
+                ORDER BY am.sent_at ASC
+            """, user_id)
+            
+            return [dict(row) for row in rows]
+    
+    async def mark_message_read(self, message_id: int):
+        """Отметить сообщение как прочитанное"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE admin_messages
+                SET read = TRUE
+                WHERE id = $1
+            """, message_id)
+    
+    async def mark_all_messages_read(self, user_id: int):
+        """Отметить все сообщения пользователя как прочитанные"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE admin_messages
+                SET read = TRUE
+                WHERE to_user_id = $1 AND read = FALSE
+            """, user_id)
+    
+    async def get_user_info_by_id(self, user_id: int) -> Optional[Dict]:
+        """Получить информацию о пользователе по ID"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT user_id, username, first_name, created_at, last_activity,
+                       plants_count, total_waterings, questions_asked
+                FROM users
+                WHERE user_id = $1
+            """, user_id)
+            
+            if row:
+                return dict(row)
+            return None
+    
+    # === МЕТОДЫ ДЛЯ АДМИН-ПЕРЕПИСКИ ===
+    
+    async def send_admin_message(self, from_user_id: int, to_user_id: int, message_text: str, context: dict = None) -> int:
+        """Отправить сообщение (от админа к пользователю или наоборот)"""
+        async with self.pool.acquire() as conn:
+            message_id = await conn.fetchval("""
+                INSERT INTO admin_messages (from_user_id, to_user_id, message_text, context)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id
+            """, from_user_id, to_user_id, message_text, 
+                json.dumps(context) if context else None)
+            
+            return message_id
+    
+    async def get_user_messages(self, user_id: int, limit: int = 50) -> List[Dict]:
+        """Получить все сообщения пользователя (входящие и исходящие)"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    am.*,
+                    u_from.username as from_username,
+                    u_from.first_name as from_first_name,
+                    u_to.username as to_username,
+                    u_to.first_name as to_first_name
+                FROM admin_messages am
+                JOIN users u_from ON am.from_user_id = u_from.user_id
+                JOIN users u_to ON am.to_user_id = u_to.user_id
+                WHERE am.from_user_id = $1 OR am.to_user_id = $1
+                ORDER BY am.sent_at DESC
+                LIMIT $2
+            """, user_id, limit)
+            
+            return [dict(row) for row in rows]
+    
+    async def get_unread_messages(self, user_id: int) -> List[Dict]:
+        """Получить непрочитанные сообщения для пользователя"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    am.*,
+                    u_from.username as from_username,
+                    u_from.first_name as from_first_name
+                FROM admin_messages am
+                JOIN users u_from ON am.from_user_id = u_from.user_id
+                WHERE am.to_user_id = $1 
+                AND am.read = FALSE
+                ORDER BY am.sent_at ASC
+            """, user_id)
+            
+            return [dict(row) for row in rows]
+    
+    async def mark_message_read(self, message_id: int):
+        """Отметить сообщение как прочитанное"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE admin_messages
+                SET read = TRUE
+                WHERE id = $1
+            """, message_id)
+    
+    async def mark_all_messages_read(self, user_id: int):
+        """Отметить все сообщения пользователя как прочитанные"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE admin_messages
+                SET read = TRUE
+                WHERE to_user_id = $1 AND read = FALSE
+            """, user_id)
+    
+    async def get_user_info_by_id(self, user_id: int) -> Optional[Dict]:
+        """Получить информацию о пользователе по ID"""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT user_id, username, first_name, created_at, last_activity,
+                       plants_count, total_waterings, questions_asked
+                FROM users
+                WHERE user_id = $1
+            """, user_id)
             
             if row:
                 return dict(row)
