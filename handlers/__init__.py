@@ -10,6 +10,7 @@ from . import questions
 from . import feedback
 from . import onboarding
 from . import growing
+from . import admin
 
 __all__ = [
     'commands',
@@ -19,5 +20,6 @@ __all__ = [
     'questions',
     'feedback',
     'onboarding',
-    'growing'
+    'growing',
+    'admin'
 ]
