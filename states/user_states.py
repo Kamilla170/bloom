@@ -17,3 +17,8 @@ class FeedbackStates(StatesGroup):
     """Состояния для обратной связи"""
     choosing_type = State()
     writing_message = State()
+
+class AdminStates(StatesGroup):
+    """Состояния для админ-переписки"""
+    waiting_user_reply = State()
+    waiting_admin_reply = State()
