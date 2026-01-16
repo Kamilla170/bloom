@@ -24,7 +24,7 @@ from services.reminder_service import (
 # Импорты handlers
 from handlers import (
     commands, photo, callbacks, plants, 
-    questions, feedback, onboarding, growing
+    questions, feedback, onboarding, growing, admin
 )
 
 # Импорт middleware
@@ -131,6 +131,7 @@ def register_handlers():
     dp.include_router(feedback.router)
     dp.include_router(onboarding.router)
     dp.include_router(growing.router)
+    dp.include_router(admin.router)  # Admin router для админ-переписки
     dp.include_router(callbacks.router)  # Callbacks последними как fallback
     
     logger.info("✅ Handlers зарегистрированы")
