@@ -40,7 +40,6 @@ async def send_watering_reminders(bot):
         logger.info(f"📅 Дата проверки: {moscow_date}")
         
         async with db.pool.acquire() as conn:
-            # Сначала проверим, есть ли вообще растения с напоминаниями
             total_plants = await conn.fetchval("""
                 SELECT COUNT(*) FROM plants p
                 JOIN reminders r ON r.plant_id = p.id AND r.reminder_type = 'watering' AND r.is_active = TRUE
@@ -48,7 +47,6 @@ async def send_watering_reminders(bot):
             """)
             logger.info(f"📊 Всего растений с активными напоминаниями: {total_plants}")
             
-            # ИСПРАВЛЕНО: Используем next_date из reminders
             plants_to_water = await conn.fetch("""
                 SELECT p.id, p.user_id, 
                        COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as display_name,
@@ -78,10 +76,12 @@ async def send_watering_reminders(bot):
             if len(plants_to_water) > 0:
                 logger.info("📋 СПИСОК РАСТЕНИЙ ДЛЯ НАПОМИНАНИЙ:")
                 for i, plant in enumerate(plants_to_water, 1):
+                    days_overdue = (moscow_date - plant['next_date'].date()).days
                     logger.info(f"   {i}. ID={plant['id']}, User={plant['user_id']}, "
                               f"Название='{plant['display_name']}', "
-                              f"NextDate={plant['next_date']}, "
-                              f"LastSent={plant['last_sent']}")
+                              f"Просрочено на {days_overdue} дней, "
+                              f"NextDate={plant['next_date'].date()}, "
+                              f"LastSent={plant['last_sent'].date() if plant['last_sent'] else 'никогда'}")
             else:
                 logger.info("✅ Нет растений требующих напоминания на эту дату")
             
@@ -112,6 +112,8 @@ async def send_single_watering_reminder(bot, plant_row):
         
         moscow_now = get_moscow_now()
         
+        days_overdue = (moscow_now.date() - plant_row['next_date'].date()).days
+        
         if plant_row['last_watered']:
             days_ago = (moscow_now.date() - plant_row['last_watered'].date()).days
             if days_ago == 0:
@@ -129,9 +131,13 @@ async def send_single_watering_reminder(bot, plant_row):
         message_text = f"💧 <b>Время полить растение!</b>\n\n"
         message_text += f"{state_emoji} <b>{plant_name}</b>\n"
         message_text += f"📊 Состояние: {state_name}\n"
-        message_text += f"⏰ {time_info}\n\n"
+        message_text += f"⏰ {time_info}\n"
         
-        # Рекомендации по состоянию
+        if days_overdue > 0:
+            message_text += f"⚠️ <b>Просрочено на {days_overdue} {'день' if days_overdue == 1 else 'дня' if days_overdue < 5 else 'дней'}</b>\n"
+        
+        message_text += f"\n"
+        
         if current_state == 'flowering':
             message_text += f"💐 Растение цветет - поливайте чаще!\n"
         elif current_state == 'dormancy':
@@ -144,7 +150,7 @@ async def send_single_watering_reminder(bot, plant_row):
         
         keyboard = watering_reminder_actions(plant_id)
         
-        logger.info(f"📤 Отправка напоминания: User={user_id}, Plant='{plant_name}' (ID={plant_id})")
+        logger.info(f"📤 Отправка напоминания: User={user_id}, Plant='{plant_name}' (ID={plant_id}), Просрочено={days_overdue} дней")
         
         await bot.send_photo(
             chat_id=user_id,
@@ -154,26 +160,22 @@ async def send_single_watering_reminder(bot, plant_row):
             reply_markup=keyboard
         )
         
-        # Обновляем last_sent и планируем следующее напоминание
         db = await get_db()
         moscow_now_naive = moscow_now.replace(tzinfo=None)
-        next_reminder = moscow_now + timedelta(days=interval)
-        next_reminder_naive = next_reminder.replace(tzinfo=None)
         
         async with db.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE reminders
                 SET last_sent = $1,
-                    send_count = COALESCE(send_count, 0) + 1,
-                    next_date = $2
-                WHERE id = $3
-            """, moscow_now_naive, next_reminder_naive, plant_row['reminder_id'])
+                    send_count = COALESCE(send_count, 0) + 1
+                WHERE id = $2
+            """, moscow_now_naive, plant_row['reminder_id'])
         
-        logger.info(f"✅ Напоминание отправлено успешно! Следующее: {next_reminder.date()}")
+        logger.info(f"✅ Напоминание отправлено! Будет повторяться каждый день до полива.")
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки напоминания для растения {plant_row.get('id')}: {e}", exc_info=True)
-        raise  # Пробрасываем ошибку выше для подсчета
+        raise
 
 
 async def send_growing_reminders(bot):
@@ -245,7 +247,6 @@ async def send_task_reminder(bot, reminder_row):
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
             )
         
-        # Отмечаем как отправленное
         db = await get_db()
         moscow_now = get_moscow_now().replace(tzinfo=None)
         async with db.pool.acquire() as conn:
@@ -271,7 +272,6 @@ async def create_plant_reminder(plant_id: int, user_id: int, interval_days: int 
         next_watering_naive = next_watering.replace(tzinfo=None)
         
         async with db.pool.acquire() as conn:
-            # Деактивируем все старые напоминания для этого растения
             deactivated = await conn.fetchval("""
                 UPDATE reminders 
                 SET is_active = FALSE 
@@ -285,7 +285,6 @@ async def create_plant_reminder(plant_id: int, user_id: int, interval_days: int 
             if deactivated:
                 logger.info(f"⚙️ Деактивировано старое напоминание для растения {plant_id}")
             
-            # Создаем новое напоминание
             reminder_id = await conn.fetchval("""
                 INSERT INTO reminders (user_id, plant_id, reminder_type, next_date, is_active)
                 VALUES ($1, $2, 'watering', $3, TRUE)
@@ -310,7 +309,6 @@ async def check_monthly_photo_reminders(bot):
         
         logger.info(f"🔍 Найдено {len(plants)} растений для месячного напоминания")
         
-        # Группируем по пользователям
         users_plants = {}
         for plant in plants:
             user_id = plant['user_id']
@@ -318,7 +316,6 @@ async def check_monthly_photo_reminders(bot):
                 users_plants[user_id] = []
             users_plants[user_id].append(plant)
         
-        # Отправляем по одному сообщению на пользователя
         for user_id, user_plants in users_plants.items():
             await send_monthly_photo_reminder(bot, user_id, user_plants)
             await db.mark_monthly_reminder_sent(user_id)
@@ -351,10 +348,10 @@ async def send_monthly_photo_reminder(bot, user_id: int, plants: list):
 {plants_text}
 
 💡 <b>Зачем это нужно?</b>
-• Отслеживание изменений и роста
-• Своевременное выявление проблем
-• История развития ваших растений
-• Корректировка ухода по состоянию
+- Отслеживание изменений и роста
+- Своевременное выявление проблем
+- История развития ваших растений
+- Корректировка ухода по состоянию
 
 📷 <b>Что делать:</b>
 Просто пришлите новое фото каждого растения!
@@ -377,3 +374,62 @@ async def send_monthly_photo_reminder(bot, user_id: int, plants: list):
         
     except Exception as e:
         logger.error(f"❌ Ошибка отправки месячного напоминания: {e}", exc_info=True)
+
+
+async def adjust_all_watering_intervals():
+    """Автоматическая сезонная корректировка интервалов полива для всех растений"""
+    try:
+        logger.info("=" * 60)
+        logger.info("🌍 АВТОМАТИЧЕСКАЯ СЕЗОННАЯ КОРРЕКТИРОВКА")
+        logger.info("=" * 60)
+        
+        from utils.season_utils import get_current_season, adjust_watering_interval
+        
+        season_info = get_current_season()
+        logger.info(f"🌍 Текущий сезон: {season_info['season_ru']}")
+        logger.info(f"📝 Рекомендации: {season_info['watering_adjustment']}")
+        
+        db = await get_db()
+        
+        async with db.pool.acquire() as conn:
+            plants = await conn.fetch("""
+                SELECT id, user_id, 
+                       COALESCE(base_watering_interval, watering_interval, 5) as base_interval,
+                       watering_interval as current_interval,
+                       COALESCE(custom_name, plant_name, 'Растение #' || id) as display_name
+                FROM plants
+                WHERE plant_type = 'regular'
+                  AND reminder_enabled = TRUE
+            """)
+            
+            logger.info(f"📊 Найдено растений для корректировки: {len(plants)}")
+            
+            updated_count = 0
+            for plant in plants:
+                plant_id = plant['id']
+                user_id = plant['user_id']
+                base_interval = plant['base_interval']
+                current_interval = plant['current_interval']
+                
+                new_interval = adjust_watering_interval(base_interval, season_info['season'])
+                
+                if new_interval != current_interval:
+                    await conn.execute("""
+                        UPDATE plants 
+                        SET watering_interval = $1
+                        WHERE id = $2
+                    """, new_interval, plant_id)
+                    
+                    await create_plant_reminder(plant_id, user_id, new_interval)
+                    
+                    logger.info(f"   ✅ {plant['display_name']}: {current_interval} → {new_interval} дней")
+                    updated_count += 1
+            
+            logger.info(f"✅ Обновлено растений: {updated_count} из {len(plants)}")
+        
+        logger.info("=" * 60)
+        logger.info("✅ СЕЗОННАЯ КОРРЕКТИРОВКА ЗАВЕРШЕНА")
+        logger.info("=" * 60)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка сезонной корректировки: {e}", exc_info=True)
