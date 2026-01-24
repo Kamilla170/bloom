@@ -9,7 +9,7 @@ def main_menu():
         ],
         [
             InlineKeyboardButton(text="📸 Анализ растения", callback_data="analyze"),
-            InlineKeyboardButton(text="❓ Задать вопрос", callback_data="question")
+            InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="question")
         ],
         [
             InlineKeyboardButton(text="🌿 Мои растения", callback_data="my_plants"),
