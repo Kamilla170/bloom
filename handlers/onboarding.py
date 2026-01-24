@@ -51,7 +51,7 @@ async def onboarding_demo_callback(callback: types.CallbackQuery):
     keyboard = [
         [InlineKeyboardButton(text="📸 Проанализировать мое растение", callback_data="onboarding_try_analyze")],
         [InlineKeyboardButton(text="🌿 Вырастить что-то новое", callback_data="onboarding_try_grow")],
-        [InlineKeyboardButton(text="❓ Задать вопрос о растениях", callback_data="onboarding_try_question")],
+        [InlineKeyboardButton(text="🤖 Спросить ИИ о растениях", callback_data="onboarding_try_question")],
     ]
     
     await callback.message.answer(
@@ -70,7 +70,7 @@ async def onboarding_quick_start_callback(callback: types.CallbackQuery):
     keyboard = [
         [InlineKeyboardButton(text="📸 Проанализировать растение", callback_data="onboarding_try_analyze")],
         [InlineKeyboardButton(text="🌿 Вырастить с нуля", callback_data="onboarding_try_grow")],
-        [InlineKeyboardButton(text="❓ Задать вопрос", callback_data="onboarding_try_question")],
+        [InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="onboarding_try_question")],
         [InlineKeyboardButton(text="💡 Сначала покажи пример", callback_data="onboarding_demo")],
     ]
     
@@ -122,7 +122,7 @@ async def onboarding_try_question_callback(callback: types.CallbackQuery, state:
     await mark_onboarding_completed(callback.from_user.id)
     
     await callback.message.answer(
-        "❓ <b>Задайте вопрос о растениях</b>\n\n"
+        "🤖 <b>Спросите ИИ о растениях</b>\n\n"
         "💡 Помогу с:\n"
         "• Проблемами листьев\n"
         "• Режимом полива\n"
