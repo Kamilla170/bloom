@@ -5,7 +5,7 @@ def plant_control_menu(plant_id: int):
     keyboard = [
         [InlineKeyboardButton(text="📸 Обновить состояние", callback_data=f"update_state_{plant_id}")],
         [InlineKeyboardButton(text="📊 История изменений", callback_data=f"view_state_history_{plant_id}")],
-        [InlineKeyboardButton(text="❓ Задать вопрос", callback_data=f"ask_about_plant_{plant_id}")],
+        [InlineKeyboardButton(text="🤖 Спросить ИИ о растении", callback_data=f"ask_about_plant_{plant_id}")],
         [InlineKeyboardButton(text="💧 Полить сейчас", callback_data=f"water_plant_{plant_id}")],
         [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"rename_plant_{plant_id}")],
         [InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"delete_plant_{plant_id}")],
@@ -30,7 +30,7 @@ def plant_analysis_actions(needs_retry: bool = False):
     """Действия после анализа растения"""
     keyboard = [
         [InlineKeyboardButton(text="✅ Добавить в коллекцию", callback_data="save_plant")],
-        [InlineKeyboardButton(text="❓ Вопрос о растении", callback_data="ask_about")],
+        [InlineKeyboardButton(text="🤖 Спросить ИИ о растении", callback_data="ask_about")],
     ]
     
     if needs_retry:
