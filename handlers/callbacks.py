@@ -41,8 +41,8 @@ async def reanalyze_callback(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "question")
 async def question_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Задать вопрос"""
-    await callback.message.answer("❓ <b>Напишите ваш вопрос</b>", parse_mode="HTML")
+    """Спросить ИИ"""
+    await callback.message.answer("🤖 <b>Спросите ИИ о растениях</b>\n\n✍️ Напишите ваш вопрос:", parse_mode="HTML")
     await state.set_state(PlantStates.waiting_question)
     await callback.answer()
 
@@ -50,7 +50,7 @@ async def question_callback(callback: types.CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "ask_about")
 async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
     """Вопрос о текущем растении"""
-    await callback.message.answer("❓ <b>Напишите вопрос о растении</b>", parse_mode="HTML")
+    await callback.message.answer("🤖 <b>Спросите ИИ о растении</b>\n\n✍️ Напишите вопрос:", parse_mode="HTML")
     await state.set_state(PlantStates.waiting_question)
     await callback.answer()
 
