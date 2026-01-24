@@ -259,13 +259,15 @@ class PlantDatabase:
             """)
             
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS care_history (
+              CREATE TABLE IF NOT EXISTS care_history (
                     id SERIAL PRIMARY KEY,
                     plant_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
                     action_type TEXT NOT NULL,
                     action_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     notes TEXT,
-                    FOREIGN KEY (plant_id) REFERENCES plants (id) ON DELETE CASCADE
+                    FOREIGN KEY (plant_id) REFERENCES plants (id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
                 )
             """)
             
@@ -336,6 +338,30 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growing_plants_user_id ON growing_plants (user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders (user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_next_date ON reminders (next_date, is_active)")
+            # === МИГРАЦИЯ: Добавление user_id в care_history ===
+            logger.info("🔄 Проверка миграции care_history.user_id...")
+            try:
+                await conn.execute("ALTER TABLE care_history ADD COLUMN IF NOT EXISTS user_id BIGINT")
+                
+                # Заполняем существующие записи
+                await conn.execute("""
+                    UPDATE care_history ch
+                    SET user_id = p.user_id
+                    FROM plants p
+                    WHERE ch.plant_id = p.id
+                    AND ch.user_id IS NULL
+                """)
+                
+                # Удаляем записи без user_id (от удаленных растений)
+                await conn.execute("DELETE FROM care_history WHERE user_id IS NULL")
+                
+                logger.info("✅ Миграция care_history.user_id завершена")
+            except Exception as e:
+                logger.info(f"Миграция care_history уже выполнена: {e}")
+
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_user_id ON care_history(user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_date ON care_history(action_date DESC)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_user_date ON care_history(user_id, action_date DESC)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_plant_id ON care_history (plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_stages_growing_plant_id ON growth_stages (growing_plant_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growth_diary_growing_plant_id ON growth_diary (growing_plant_id)")
@@ -483,12 +509,11 @@ class PlantDatabase:
                         UPDATE users 
                         SET total_waterings = (
                             SELECT COUNT(*) 
-                            FROM care_history ch
-                            JOIN plants p ON ch.plant_id = p.id
-                            WHERE p.user_id = (SELECT user_id FROM plants WHERE id = NEW.plant_id)
-                            AND ch.action_type = 'watered'
+                            FROM care_history
+                            WHERE user_id = NEW.user_id
+                            AND action_type = 'watered'
                         )
-                        WHERE user_id = (SELECT user_id FROM plants WHERE id = NEW.plant_id);
+                        WHERE user_id = NEW.user_id;
                     END IF;
                     RETURN NEW;
                 END;
@@ -695,9 +720,9 @@ class PlantDatabase:
             
             try:
                 await conn.execute("""
-                    INSERT INTO care_history (plant_id, action_type, notes)
-                    VALUES ($1, 'added', 'Растение добавлено в коллекцию')
-                """, plant_id)
+                    INSERT INTO care_history (plant_id, user_id, action_type, notes)
+                    VALUES ($1, $2, 'added', 'Растение добавлено в коллекцию')
+                """, plant_id, user_id)
             except Exception as e:
                 logger.error(f"Ошибка добавления в историю: {e}")
             
@@ -825,9 +850,9 @@ class PlantDatabase:
             
             try:
                 await conn.execute("""
-                    INSERT INTO care_history (plant_id, action_type, notes)
-                    VALUES ($1, 'renamed', $2)
-                """, plant_id, f'Переименовано в "{new_name}"')
+                    INSERT INTO care_history (plant_id, user_id, action_type, notes)
+                    VALUES ($1, $2, 'renamed', $3)
+                """, plant_id, user_id, f'Переименовано в "{new_name}"')
             except Exception as e:
                 logger.error(f"Ошибка добавления в историю: {e}")
     
@@ -965,9 +990,9 @@ class PlantDatabase:
                 
                 try:
                     await conn.execute("""
-                        INSERT INTO care_history (plant_id, action_type, notes)
-                        VALUES ($1, 'watered', 'Растение полито')
-                    """, plant_id)
+                        INSERT INTO care_history (plant_id, user_id, action_type, notes)
+                        VALUES ($1, $2, 'watered', 'Растение полито')
+                    """, plant_id, user_id)
                 except Exception as e:
                     logger.error(f"Ошибка добавления в историю: {e}")
             else:
@@ -985,9 +1010,9 @@ class PlantDatabase:
                 for plant_row in plant_ids:
                     try:
                         await conn.execute("""
-                            INSERT INTO care_history (plant_id, action_type, notes)
-                            VALUES ($1, 'watered', 'Растение полито (массовый полив)')
-                        """, plant_row['id'])
+    INSERT INTO care_history (plant_id, user_id, action_type, notes)
+    VALUES ($1, $2, 'watered', 'Растение полито (массовый полив)')
+""", plant_row['id'], user_id)
                     except Exception as e:
                         logger.error(f"Ошибка добавления в историю: {e}")
             
