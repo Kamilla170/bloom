@@ -302,14 +302,10 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None,
     }
 
 
-async def answer_plant_question(question: str, plant_context: str = None) -> dict:
-    """Ответить на вопрос о растении с контекстом
-    
-    Returns:
-        dict: {"answer": str, "model": str} или {"error": str} в случае ошибки
-    """
+async def answer_plant_question(question: str, plant_context: str = None) -> str:
+    """Ответить на вопрос о растении с контекстом"""
     if not openai_client:
-        return {"error": "❌ OpenAI API недоступен"}
+        return "❌ OpenAI API недоступен"
     
     try:
         # Получаем информацию о сезоне
@@ -381,51 +377,24 @@ async def answer_plant_question(question: str, plant_context: str = None) -> dic
 
 ОБЯЗАТЕЛЬНО учитывайте текущий сезон в рекомендациях по поливу и уходу!"""
         
-        # Пробуем сначала gpt-5.1, если не получается - fallback на gpt-4o
-        models_to_try = ["gpt-5.1", "gpt-4o"]
-        last_error = None
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=500,
+            temperature=0.3
+        )
         
-        for model_name in models_to_try:
-            try:
-                logger.info(f"🔄 Пробую модель: {model_name}")
-                response = await openai_client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=500,
-                    temperature=0.3
-                )
-                
-                answer = response.choices[0].message.content
-                
-                if answer and len(answer) > 10:
-                    logger.info(f"✅ OpenAI ответил с контекстом (модель: {model_name}, сезон: {season_info['season_ru']})")
-                    return {"answer": answer, "model": model_name}
-                else:
-                    logger.warning(f"⚠️ Модель {model_name} вернула пустой ответ")
-                    
-            except Exception as model_error:
-                last_error = model_error
-                logger.warning(f"⚠️ Ошибка с моделью {model_name}: {model_error}")
-                if model_name == models_to_try[-1]:
-                    # Это была последняя модель, пробрасываем ошибку
-                    raise
-                # Пробуем следующую модель
-                continue
+        answer = response.choices[0].message.content
         
-        # Если дошли сюда, значит все модели вернули пустой ответ
-        raise Exception("Все модели вернули пустой ответ")
+        logger.info(f"✅ OpenAI ответил с контекстом (сезон: {season_info['season_ru']})")
+        return answer
         
     except Exception as e:
-        logger.error(f"❌ Ошибка ответа на вопрос: {e}", exc_info=True)
-        logger.error(f"❌ Тип ошибки: {type(e).__name__}")
-        if hasattr(e, 'response'):
-            logger.error(f"❌ Response: {e.response}")
-        if hasattr(e, 'status_code'):
-            logger.error(f"❌ Status code: {e.status_code}")
-        return {"error": "❌ Не могу дать ответ. Попробуйте переформулировать вопрос."}
+        logger.error(f"❌ Ошибка ответа на вопрос: {e}")
+        return "❌ Не могу дать ответ. Попробуйте переформулировать вопрос."
 
 
 async def generate_growing_plan(plant_name: str) -> tuple:
@@ -474,7 +443,7 @@ async def generate_growing_plan(plant_name: str) -> tuple:
 """
         
         response = await openai_client.chat.completions.create(
-            model="gpt-5.1",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "system", 
