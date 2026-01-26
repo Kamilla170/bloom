@@ -83,6 +83,10 @@ async def handle_question(message: types.Message, state: FSMContext):
         # Получаем ответ от AI
         answer = await answer_plant_question(message.text, context_text)
         
+        logger.info(f"📝 Получен ответ от AI: длина={len(answer) if answer else 0}, начинается с ❌={answer.startswith('❌') if answer else 'N/A'}")
+        if answer:
+            logger.info(f"📝 Первые 100 символов ответа: {answer[:100]}")
+        
         await processing_msg.delete()
         
         if answer and len(answer) > 50 and not answer.startswith("❌"):
