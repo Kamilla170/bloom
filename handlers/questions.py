@@ -85,28 +85,7 @@ async def handle_question(message: types.Message, state: FSMContext):
         
         await processing_msg.delete()
         
-        # Проверяем формат ответа (старый формат - строка, новый - dict)
-        if isinstance(result, dict):
-            if "error" in result:
-                answer_text = result["error"]
-                model_name = None
-            else:
-                answer_text = result.get("answer", "")
-                model_name = result.get("model", "unknown")
-        else:
-            # Обратная совместимость со старым форматом (строка)
-            answer_text = result
-            model_name = None
-        
-        logger.info(f"📝 Получен ответ от AI: модель={model_name}, длина={len(answer_text) if answer_text else 0}")
-        if answer_text:
-            logger.info(f"📝 Первые 100 символов ответа: {answer_text[:100]}")
-        
-        if answer_text and len(answer_text) > 50 and not answer_text.startswith("❌"):
-            # Логируем информацию о модели (только для разработчика)
-            if model_name:
-                logger.info(f"✅ Ответ сгенерирован моделью: {model_name}")
-            
+        if answer and len(answer) > 50 and not answer.startswith("❌"):
             # Сохраняем взаимодействие
             if plant_id:
                 await save_interaction(
