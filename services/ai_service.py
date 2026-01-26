@@ -302,10 +302,14 @@ async def analyze_plant_image(image_data: bytes, user_question: str = None,
     }
 
 
-async def answer_plant_question(question: str, plant_context: str = None) -> str:
-    """Ответить на вопрос о растении с контекстом"""
+async def answer_plant_question(question: str, plant_context: str = None) -> dict:
+    """Ответить на вопрос о растении с контекстом
+    
+    Returns:
+        dict: {"answer": str, "model": str} или {"error": str} в случае ошибки
+    """
     if not openai_client:
-        return "❌ OpenAI API недоступен"
+        return {"error": "❌ OpenAI API недоступен"}
     
     try:
         # Получаем информацию о сезоне
@@ -398,7 +402,7 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
                 
                 if answer and len(answer) > 10:
                     logger.info(f"✅ OpenAI ответил с контекстом (модель: {model_name}, сезон: {season_info['season_ru']})")
-                    return answer
+                    return {"answer": answer, "model": model_name}
                 else:
                     logger.warning(f"⚠️ Модель {model_name} вернула пустой ответ")
                     
@@ -421,7 +425,7 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
             logger.error(f"❌ Response: {e.response}")
         if hasattr(e, 'status_code'):
             logger.error(f"❌ Status code: {e.status_code}")
-        return "❌ Не могу дать ответ. Попробуйте переформулировать вопрос."
+        return {"error": "❌ Не могу дать ответ. Попробуйте переформулировать вопрос."}
 
 
 async def generate_growing_plan(plant_name: str) -> tuple:
