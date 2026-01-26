@@ -378,7 +378,7 @@ async def answer_plant_question(question: str, plant_context: str = None) -> str
 ОБЯЗАТЕЛЬНО учитывайте текущий сезон в рекомендациях по поливу и уходу!"""
         
         response = await openai_client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5.1",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -443,7 +443,7 @@ async def generate_growing_plan(plant_name: str) -> tuple:
 """
         
         response = await openai_client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5.1",
             messages=[
                 {
                     "role": "system", 
