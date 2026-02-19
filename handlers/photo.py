@@ -7,6 +7,7 @@ from aiogram.filters import StateFilter
 from states.user_states import PlantStates
 from services.ai_service import analyze_plant_image
 from services.plant_service import temp_analyses, update_plant_state_from_photo
+from services.subscription_service import check_limit, increment_usage
 from keyboards.plant_menu import plant_analysis_actions
 from utils.formatters import get_state_recommendations
 from utils.time_utils import get_moscow_now
@@ -27,6 +28,14 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
         
         if not plant_id:
             await message.reply("❌ Ошибка: данные потеряны")
+            await state.clear()
+            return
+        
+        # Проверка лимита анализов
+        allowed, error_msg = await check_limit(user_id, 'analyses')
+        if not allowed:
+            from handlers.subscription import send_limit_message
+            await send_limit_message(message, error_msg)
             await state.clear()
             return
         
@@ -71,6 +80,9 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
         await processing_msg.delete()
         
         if result["success"]:
+            # Увеличиваем счётчик использования
+            await increment_usage(user_id, 'analyses')
+            
             state_info = result.get("state_info", {})
             
             update_result = await update_plant_state_from_photo(
@@ -123,6 +135,15 @@ async def handle_state_update_photo(message: types.Message, state: FSMContext, b
 async def handle_photo(message: types.Message, bot):
     """Обработка фотографий - ГЛАВНЫЙ АНАЛИЗ"""
     try:
+        user_id = message.from_user.id
+        
+        # Проверка лимита анализов
+        allowed, error_msg = await check_limit(user_id, 'analyses')
+        if not allowed:
+            from handlers.subscription import send_limit_message
+            await send_limit_message(message, error_msg)
+            return
+        
         processing_msg = await message.reply(
             "🔍 <b>Анализирую растение...</b>\n\n"
             "• Определяю вид\n"
@@ -151,7 +172,8 @@ async def handle_photo(message: types.Message, bot):
         await processing_msg.delete()
         
         if result["success"]:
-            user_id = message.from_user.id
+            # Увеличиваем счётчик использования
+            await increment_usage(user_id, 'analyses')
             
             temp_analyses[user_id] = {
                 "analysis": result.get("raw_analysis", result["analysis"]),
@@ -184,6 +206,15 @@ async def handle_photo(message: types.Message, bot):
                 parse_mode="HTML",
                 reply_markup=keyboard
             )
+            
+            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого анализа ===
+            from handlers.onboarding import send_tip_if_needed, TIP_AFTER_ANALYSIS
+            
+            async def _send_analysis_tip():
+                await message.answer(TIP_AFTER_ANALYSIS)
+            
+            await send_tip_if_needed(user_id, 'analysis', _send_analysis_tip)
+            
         else:
             from keyboards.main_menu import simple_back_menu
             await message.reply("❌ Ошибка анализа", reply_markup=simple_back_menu())
