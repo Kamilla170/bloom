@@ -1,5 +1,6 @@
 from aiogram.fsm.state import State, StatesGroup
 
+
 class PlantStates(StatesGroup):
     """Состояния для работы с растениями"""
     waiting_question = State()
@@ -12,11 +13,19 @@ class PlantStates(StatesGroup):
     onboarding_demo = State()
     onboarding_quick_start = State()
     waiting_state_update_photo = State()
+    
+    # Новые состояния для указания даты полива при добавлении растения
+    waiting_last_watering = State()  # Ожидание выбора даты последнего полива
+    
+    # Новые состояния для указания даты последнего полива при сохранении
+    waiting_last_watering = State()
+
 
 class FeedbackStates(StatesGroup):
     """Состояния для обратной связи"""
     choosing_type = State()
     writing_message = State()
+
 
 class AdminStates(StatesGroup):
     """Состояния для админ-переписки"""
