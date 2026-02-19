@@ -76,17 +76,6 @@ async def add_command(message: types.Message):
     )
 
 
-@router.message(Command("grow"))
-async def grow_command(message: types.Message, state: FSMContext):
-    """Команда /grow"""
-    await message.answer(
-        "🌿 <b>Выращиваем с нуля!</b>\n\n"
-        "🌱 Напишите, что хотите вырастить:",
-        parse_mode="HTML"
-    )
-    await state.set_state(PlantStates.choosing_plant_to_grow)
-
-
 @router.message(Command("analyze"))
 async def analyze_command(message: types.Message):
     """Команда /analyze"""
@@ -188,9 +177,21 @@ async def stats_command(message: types.Message):
     """Команда /stats"""
     user_id = message.from_user.id
     
+    logger.info(f"📊 Запрос статистики от user_id={user_id}")
+    
     try:
         db = await get_db()
+        
+        # Дополнительная проверка - считаем растения напрямую
+        async with db.pool.acquire() as conn:
+            direct_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM plants WHERE user_id = $1", user_id
+            )
+            logger.info(f"📊 Прямой подсчёт растений для user_id={user_id}: {direct_count}")
+        
         stats = await db.get_user_stats(user_id)
+        
+        logger.info(f"📊 Статистика для user_id={user_id}: plants={stats['total_plants']}, waterings={stats['total_waterings']}")
         
         stats_text = f"📊 <b>Ваша статистика</b>\n\n"
         stats_text += f"🌱 <b>Растений:</b> {stats['total_plants']}\n"
@@ -215,7 +216,7 @@ async def stats_command(message: types.Message):
         )
         
     except Exception as e:
-        logger.error(f"Ошибка статистики: {e}")
+        logger.error(f"❌ Ошибка статистики для user_id={user_id}: {e}", exc_info=True)
         await message.answer("❌ Ошибка загрузки статистики", reply_markup=main_menu())
 
 
@@ -386,7 +387,6 @@ async def help_command(message: types.Message):
 
 <b>Команды:</b>
 /start - Главное меню
-/grow - Вырастить с нуля
 /help - Справка
     """
     
