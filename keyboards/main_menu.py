@@ -5,15 +5,15 @@ def main_menu():
     keyboard = [
         [
             InlineKeyboardButton(text="🌱 Добавить растение", callback_data="add_plant"),
-            InlineKeyboardButton(text="🌿 Вырастить с нуля", callback_data="grow_from_scratch")
+            InlineKeyboardButton(text="📸 Анализ растения", callback_data="analyze")
         ],
         [
-            InlineKeyboardButton(text="📸 Анализ растения", callback_data="analyze"),
-            InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="question")
+            InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="question"),
+            InlineKeyboardButton(text="🌿 Мои растения", callback_data="my_plants")
         ],
         [
-            InlineKeyboardButton(text="🌿 Мои растения", callback_data="my_plants"),
-            InlineKeyboardButton(text="📊 Статистика", callback_data="stats")
+            InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+            InlineKeyboardButton(text="⭐ Подписка", callback_data="show_subscription")
         ],
         [
             InlineKeyboardButton(text="📝 Обратная связь", callback_data="feedback"),
