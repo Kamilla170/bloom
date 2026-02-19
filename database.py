@@ -42,7 +42,10 @@ class PlantDatabase:
                     last_action TEXT,
                     plants_count INTEGER DEFAULT 0,
                     total_waterings INTEGER DEFAULT 0,
-                    questions_asked INTEGER DEFAULT 0
+                    questions_asked INTEGER DEFAULT 0,
+                    tip_analysis_shown BOOLEAN DEFAULT FALSE,
+                    tip_save_shown BOOLEAN DEFAULT FALSE,
+                    tip_watering_shown BOOLEAN DEFAULT FALSE
                 )
             """)
             
@@ -73,6 +76,7 @@ class PlantDatabase:
                     last_watered TIMESTAMP,
                     watering_count INTEGER DEFAULT 0,
                     watering_interval INTEGER DEFAULT 5,
+                    base_watering_interval INTEGER,
                     notes TEXT,
                     reminder_enabled BOOLEAN DEFAULT TRUE,
                     plant_type TEXT DEFAULT 'regular',
@@ -307,6 +311,55 @@ class PlantDatabase:
                 )
             """)
             
+            # === ТАБЛИЦЫ ПОДПИСКИ ===
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    user_id BIGINT PRIMARY KEY,
+                    plan TEXT NOT NULL DEFAULT 'free',
+                    expires_at TIMESTAMP,
+                    auto_pay_method_id TEXT,
+                    granted_by_admin BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS usage_limits (
+                    user_id BIGINT PRIMARY KEY,
+                    analyses_used INTEGER NOT NULL DEFAULT 0,
+                    questions_used INTEGER NOT NULL DEFAULT 0,
+                    reset_date TIMESTAMP NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+            
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS payments (
+                    id SERIAL PRIMARY KEY,
+                    payment_id TEXT UNIQUE NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'RUB',
+                    status TEXT NOT NULL,
+                    description TEXT,
+                    payment_method_id TEXT,
+                    is_recurring BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+            
+            # Индексы для подписки
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_plan ON subscriptions(plan)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_expires ON subscriptions(expires_at)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_payments_payment_id ON payments(payment_id)")
+            
             # Добавляем новые колонки
             try:
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS current_state TEXT DEFAULT 'healthy'")
@@ -315,6 +368,7 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS growth_stage TEXT DEFAULT 'young'")
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS last_photo_analysis TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
                 await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS environment_data JSONB")
+                await conn.execute("ALTER TABLE plants ADD COLUMN IF NOT EXISTS base_watering_interval INTEGER")
                 await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS monthly_photo_reminder BOOLEAN DEFAULT TRUE")
                 await conn.execute("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS last_monthly_reminder TIMESTAMP")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE")
@@ -324,6 +378,10 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS plants_count INTEGER DEFAULT 0")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_waterings INTEGER DEFAULT 0")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS questions_asked INTEGER DEFAULT 0")
+                # Флаги контекстных подсказок онбординга
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tip_analysis_shown BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tip_save_shown BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tip_watering_shown BOOLEAN DEFAULT FALSE")
             except Exception as e:
                 logger.info(f"Колонки уже существуют: {e}")
             
@@ -358,6 +416,15 @@ class PlantDatabase:
                 logger.info("✅ Миграция care_history.user_id завершена")
             except Exception as e:
                 logger.info(f"Миграция care_history уже выполнена: {e}")
+
+            # Миграция: установить plant_type = 'regular' для всех NULL
+            try:
+                updated = await conn.execute("""
+                    UPDATE plants SET plant_type = 'regular' WHERE plant_type IS NULL
+                """)
+                logger.info(f"✅ Миграция plant_type: обновлено записей")
+            except Exception as e:
+                logger.info(f"Миграция plant_type: {e}")
 
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_user_id ON care_history(user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_date ON care_history(action_date DESC)")
@@ -626,6 +693,16 @@ class PlantDatabase:
             
             logger.info("✅ Существующие данные обновлены")
 
+            # === МИГРАЦИЯ: Создание подписок для существующих пользователей ===
+            logger.info("💳 Миграция подписок для существующих пользователей...")
+            await conn.execute("""
+                INSERT INTO subscriptions (user_id, plan)
+                SELECT user_id, 'free' FROM users
+                WHERE user_id NOT IN (SELECT user_id FROM subscriptions)
+                ON CONFLICT (user_id) DO NOTHING
+            """)
+            logger.info("✅ Подписки для существующих пользователей созданы")
+
             logger.info("✅ Все миграции применены успешно")
     
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
@@ -669,6 +746,13 @@ class PlantDatabase:
             await conn.execute("""
                 INSERT INTO user_settings (user_id)
                 VALUES ($1)
+                ON CONFLICT (user_id) DO NOTHING
+            """, user_id)
+            
+            # Создаём запись подписки (free по умолчанию)
+            await conn.execute("""
+                INSERT INTO subscriptions (user_id, plan)
+                VALUES ($1, 'free')
                 ON CONFLICT (user_id) DO NOTHING
             """, user_id)
     
@@ -865,6 +949,32 @@ class PlantDatabase:
                 WHERE id = $2
             """, interval_days, plant_id)
     
+    async def set_base_watering_interval(self, plant_id: int, base_interval: int):
+        """Установить базовый интервал полива"""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE plants 
+                SET base_watering_interval = $1 
+                WHERE id = $2
+            """, base_interval, plant_id)
+    
+    async def get_all_plants_for_seasonal_update(self) -> list:
+        """Получить все растения для сезонной корректировки через GPT"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT 
+                    p.id,
+                    p.user_id,
+                    COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as display_name,
+                    p.plant_name,
+                    p.watering_interval as current_interval
+                FROM plants p
+                WHERE p.plant_type = 'regular'
+                  AND p.reminder_enabled = TRUE
+                ORDER BY p.user_id, p.id
+            """)
+            return [dict(row) for row in rows]
+    
     async def get_plant_by_id(self, plant_id: int, user_id: int = None) -> Optional[Dict]:
         """Получить растение по ID"""
         async with self.pool.acquire() as conn:
@@ -911,7 +1021,7 @@ class PlantDatabase:
                        notes, plant_type, growing_id,
                        current_state, state_changed_date, state_changes_count
                 FROM plants 
-                WHERE user_id = $1 AND plant_type = 'regular'
+                WHERE user_id = $1 AND (plant_type = 'regular' OR plant_type IS NULL)
                 ORDER BY saved_date DESC
                 LIMIT $2
             """, user_id, limit)
@@ -1010,9 +1120,9 @@ class PlantDatabase:
                 for plant_row in plant_ids:
                     try:
                         await conn.execute("""
-    INSERT INTO care_history (plant_id, user_id, action_type, notes)
-    VALUES ($1, $2, 'watered', 'Растение полито (массовый полив)')
-""", plant_row['id'], user_id)
+                            INSERT INTO care_history (plant_id, user_id, action_type, notes)
+                            VALUES ($1, $2, 'watered', 'Растение полито (массовый полив)')
+                        """, plant_row['id'], user_id)
                     except Exception as e:
                         logger.error(f"Ошибка добавления в историю: {e}")
             
@@ -1184,6 +1294,7 @@ class PlantDatabase:
     async def get_user_stats(self, user_id: int) -> Dict:
         """Статистика пользователя"""
         async with self.pool.acquire() as conn:
+            # Статистика по обычным растениям (без фильтра plant_type для совместимости)
             regular_stats = await conn.fetchrow("""
                 SELECT 
                     COUNT(*) as total_plants,
@@ -1193,7 +1304,7 @@ class PlantDatabase:
                     MIN(saved_date) as first_plant_date,
                     MAX(last_watered) as last_watered_date
                 FROM plants 
-                WHERE user_id = $1 AND plant_type = 'regular'
+                WHERE user_id = $1
             """, user_id)
             
             growing_stats = await conn.fetchrow("""
@@ -1376,89 +1487,6 @@ class PlantDatabase:
                 return dict(row)
             return None
     
-    
-    # === МЕТОДЫ ДЛЯ АДМИН-ПЕРЕПИСКИ ===
-    
-    async def send_admin_message(self, from_user_id: int, to_user_id: int, message_text: str, context: dict = None) -> int:
-        """Отправить сообщение (от админа к пользователю или наоборот)"""
-        async with self.pool.acquire() as conn:
-            message_id = await conn.fetchval("""
-                INSERT INTO admin_messages (from_user_id, to_user_id, message_text, context)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id
-            """, from_user_id, to_user_id, message_text, 
-                json.dumps(context) if context else None)
-            
-            return message_id
-    
-    async def get_user_messages(self, user_id: int, limit: int = 50) -> List[Dict]:
-        """Получить все сообщения пользователя (входящие и исходящие)"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT 
-                    am.*,
-                    u_from.username as from_username,
-                    u_from.first_name as from_first_name,
-                    u_to.username as to_username,
-                    u_to.first_name as to_first_name
-                FROM admin_messages am
-                JOIN users u_from ON am.from_user_id = u_from.user_id
-                JOIN users u_to ON am.to_user_id = u_to.user_id
-                WHERE am.from_user_id = $1 OR am.to_user_id = $1
-                ORDER BY am.sent_at DESC
-                LIMIT $2
-            """, user_id, limit)
-            
-            return [dict(row) for row in rows]
-    
-    async def get_unread_messages(self, user_id: int) -> List[Dict]:
-        """Получить непрочитанные сообщения для пользователя"""
-        async with self.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT 
-                    am.*,
-                    u_from.username as from_username,
-                    u_from.first_name as from_first_name
-                FROM admin_messages am
-                JOIN users u_from ON am.from_user_id = u_from.user_id
-                WHERE am.to_user_id = $1 
-                AND am.read = FALSE
-                ORDER BY am.sent_at ASC
-            """, user_id)
-            
-            return [dict(row) for row in rows]
-    
-    async def mark_message_read(self, message_id: int):
-        """Отметить сообщение как прочитанное"""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE admin_messages
-                SET read = TRUE
-                WHERE id = $1
-            """, message_id)
-    
-    async def mark_all_messages_read(self, user_id: int):
-        """Отметить все сообщения пользователя как прочитанные"""
-        async with self.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE admin_messages
-                SET read = TRUE
-                WHERE to_user_id = $1 AND read = FALSE
-            """, user_id)
-    
-    async def get_user_info_by_id(self, user_id: int) -> Optional[Dict]:
-        """Получить информацию о пользователе по ID"""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                SELECT user_id, username, first_name, created_at, last_activity,
-                       plants_count, total_waterings, questions_asked
-                FROM users
-                WHERE user_id = $1
-            """, user_id)
-            
-            if row:
-                return dict(row)
-            return None
     
     # === МЕТОДЫ ДЛЯ АДМИН-ПЕРЕПИСКИ ===
     
