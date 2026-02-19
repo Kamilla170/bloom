@@ -11,6 +11,7 @@ from . import feedback
 from . import onboarding
 from . import growing
 from . import admin
+from . import subscription
 
 __all__ = [
     'commands',
@@ -21,5 +22,6 @@ __all__ = [
     'feedback',
     'onboarding',
     'growing',
-    'admin'
+    'admin',
+    'subscription',
 ]
