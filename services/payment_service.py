@@ -1,0 +1,361 @@
+import logging
+import uuid
+import aiohttp
+import json
+from datetime import datetime
+from typing import Dict, Optional
+from base64 import b64encode
+
+from config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, PRO_PRICE, WEBHOOK_URL
+
+logger = logging.getLogger(__name__)
+
+YOOKASSA_API_URL = "https://api.yookassa.ru/v3"
+
+
+def _get_auth_header() -> str:
+    """Basic Auth header для YooKassa"""
+    credentials = f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}"
+    encoded = b64encode(credentials.encode()).decode()
+    return f"Basic {encoded}"
+
+
+def _get_headers(idempotency_key: str = None) -> dict:
+    """Заголовки для запросов к YooKassa"""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": _get_auth_header(),
+    }
+    if idempotency_key:
+        headers["Idempotence-Key"] = idempotency_key
+    return headers
+
+
+async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dict]:
+    """
+    Создать платёж в YooKassa.
+    
+    Args:
+        user_id: ID пользователя Telegram
+        save_method: сохранить метод оплаты для автоплатежей
+    
+    Returns:
+        {
+            'payment_id': str,
+            'confirmation_url': str,
+            'status': str
+        }
+        или None при ошибке
+    """
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        logger.error("❌ YooKassa не настроена: YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY отсутствуют")
+        return None
+    
+    idempotency_key = str(uuid.uuid4())
+    
+    return_url = WEBHOOK_URL or "https://t.me/bloom_ai_bot"
+    
+    payload = {
+        "amount": {
+            "value": f"{PRO_PRICE}.00",
+            "currency": "RUB"
+        },
+        "capture": True,
+        "confirmation": {
+            "type": "redirect",
+            "return_url": return_url
+        },
+        "description": f"Bloom AI PRO подписка (пользователь {user_id})",
+        "metadata": {
+            "user_id": str(user_id),
+            "type": "subscription"
+        },
+        "save_payment_method": save_method,
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YOOKASSA_API_URL}/payments",
+                headers=_get_headers(idempotency_key),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                data = await resp.json()
+                
+                if resp.status == 200:
+                    logger.info(f"✅ Платёж создан: {data['id']} для user_id={user_id}")
+                    
+                    # Сохраняем платёж в БД
+                    from database import get_db
+                    db = await get_db()
+                    async with db.pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO payments (payment_id, user_id, amount, currency, status, description, created_at)
+                            VALUES ($1, $2, $3, 'RUB', $4, $5, CURRENT_TIMESTAMP)
+                        """, data['id'], user_id, PRO_PRICE, data['status'], payload['description'])
+                    
+                    return {
+                        'payment_id': data['id'],
+                        'confirmation_url': data['confirmation']['confirmation_url'],
+                        'status': data['status'],
+                    }
+                else:
+                    logger.error(f"❌ Ошибка создания платежа: {resp.status} {data}")
+                    return None
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка запроса к YooKassa: {e}", exc_info=True)
+        return None
+
+
+async def create_recurring_payment(user_id: int, payment_method_id: str) -> Optional[Dict]:
+    """
+    Создать рекуррентный (автоматический) платёж.
+    
+    Args:
+        user_id: ID пользователя
+        payment_method_id: сохранённый метод оплаты
+    
+    Returns:
+        dict с результатом или None
+    """
+    if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
+        return None
+    
+    idempotency_key = str(uuid.uuid4())
+    
+    payload = {
+        "amount": {
+            "value": f"{PRO_PRICE}.00",
+            "currency": "RUB"
+        },
+        "capture": True,
+        "payment_method_id": payment_method_id,
+        "description": f"Bloom AI PRO — автопродление (пользователь {user_id})",
+        "metadata": {
+            "user_id": str(user_id),
+            "type": "recurring"
+        }
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{YOOKASSA_API_URL}/payments",
+                headers=_get_headers(idempotency_key),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
+                data = await resp.json()
+                
+                if resp.status == 200:
+                    logger.info(f"✅ Рекуррентный платёж создан: {data['id']} для user_id={user_id}")
+                    
+                    from database import get_db
+                    db = await get_db()
+                    async with db.pool.acquire() as conn:
+                        await conn.execute("""
+                            INSERT INTO payments (payment_id, user_id, amount, currency, status, description, is_recurring, created_at)
+                            VALUES ($1, $2, $3, 'RUB', $4, $5, TRUE, CURRENT_TIMESTAMP)
+                        """, data['id'], user_id, PRO_PRICE, data['status'], payload['description'])
+                    
+                    return {
+                        'payment_id': data['id'],
+                        'status': data['status'],
+                    }
+                else:
+                    logger.error(f"❌ Ошибка рекуррентного платежа: {resp.status} {data}")
+                    return None
+                    
+    except Exception as e:
+        logger.error(f"❌ Ошибка рекуррентного платежа: {e}", exc_info=True)
+        return None
+
+
+async def handle_payment_webhook(payload: dict) -> bool:
+    """
+    Обработка webhook от YooKassa.
+    
+    Args:
+        payload: тело запроса от YooKassa
+    
+    Returns:
+        True если обработано успешно
+    """
+    try:
+        event_type = payload.get('event')
+        payment_data = payload.get('object', {})
+        payment_id = payment_data.get('id')
+        status = payment_data.get('status')
+        metadata = payment_data.get('metadata', {})
+        user_id = metadata.get('user_id')
+        
+        if not payment_id or not user_id:
+            logger.warning(f"⚠️ Webhook без payment_id или user_id: {payload}")
+            return False
+        
+        user_id = int(user_id)
+        
+        logger.info(f"💳 Webhook: event={event_type}, payment_id={payment_id}, status={status}, user_id={user_id}")
+        
+        from database import get_db
+        db = await get_db()
+        
+        # Обновляем статус платежа в БД
+        async with db.pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE payments SET status = $1, updated_at = CURRENT_TIMESTAMP
+                WHERE payment_id = $2
+            """, status, payment_id)
+        
+        if event_type == 'payment.succeeded' and status == 'succeeded':
+            # Получаем payment_method_id для автоплатежей
+            payment_method = payment_data.get('payment_method', {})
+            payment_method_id = None
+            if payment_method.get('saved'):
+                payment_method_id = payment_method.get('id')
+                logger.info(f"💾 Сохранён метод оплаты: {payment_method_id}")
+            
+            # Сохраняем payment_method_id в БД
+            async with db.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE payments 
+                    SET payment_method_id = $1, updated_at = CURRENT_TIMESTAMP
+                    WHERE payment_id = $2
+                """, payment_method_id, payment_id)
+            
+            # Активируем подписку
+            from services.subscription_service import activate_pro
+            expires_at = await activate_pro(
+                user_id, 
+                payment_method_id=payment_method_id
+            )
+            
+            logger.info(f"✅ PRO активирован для user_id={user_id}, expires={expires_at}")
+            
+            # Отправляем уведомление пользователю
+            await _notify_user_payment_success(user_id, expires_at)
+            
+            return True
+        
+        elif event_type == 'payment.canceled' and status == 'canceled':
+            cancellation = payment_data.get('cancellation_details', {})
+            reason = cancellation.get('reason', 'unknown')
+            
+            logger.warning(f"❌ Платёж отменён: user_id={user_id}, reason={reason}")
+            
+            # Уведомляем если это был рекуррентный платёж
+            if metadata.get('type') == 'recurring':
+                await _notify_user_payment_failed(user_id, reason)
+            
+            return True
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки webhook: {e}", exc_info=True)
+        return False
+
+
+async def process_auto_payments():
+    """
+    Обработка автоплатежей — вызывается scheduler'ом ежедневно.
+    Ищет подписки, истекающие завтра, и создаёт рекуррентные платежи.
+    """
+    from services.subscription_service import get_expiring_subscriptions
+    
+    expiring = await get_expiring_subscriptions(days_before=1)
+    
+    if not expiring:
+        logger.info("💳 Нет подписок для автопродления")
+        return
+    
+    logger.info(f"💳 Найдено {len(expiring)} подписок для автопродления")
+    
+    for sub in expiring:
+        user_id = sub['user_id']
+        method_id = sub['auto_pay_method_id']
+        
+        if not method_id:
+            continue
+        
+        result = await create_recurring_payment(user_id, method_id)
+        
+        if result:
+            logger.info(f"✅ Автоплатёж создан для user_id={user_id}: {result['payment_id']}")
+        else:
+            logger.error(f"❌ Не удалось создать автоплатёж для user_id={user_id}")
+            await _notify_user_payment_failed(user_id, "auto_payment_creation_failed")
+
+
+async def _notify_user_payment_success(user_id: int, expires_at: datetime):
+    """Уведомить пользователя об успешной оплате"""
+    try:
+        from bot import bot
+        
+        expires_str = expires_at.strftime('%d.%m.%Y')
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "🎉 <b>PRO подписка активирована!</b>\n\n"
+                f"✅ Ваш план: <b>PRO</b>\n"
+                f"📅 Активна до: <b>{expires_str}</b>\n\n"
+                "🌱 Теперь у вас безлимитный доступ:\n"
+                "• Неограниченные растения\n"
+                "• Безлимитные анализы фото\n"
+                "• Безлимитные вопросы ИИ\n\n"
+                "Спасибо за поддержку! 🙏"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ Не удалось уведомить user_id={user_id}: {e}")
+
+
+async def _notify_user_payment_failed(user_id: int, reason: str):
+    """Уведомить пользователя о неудачной оплате"""
+    try:
+        from bot import bot
+        from config import PRO_GRACE_PERIOD_DAYS
+        
+        reason_texts = {
+            'insufficient_funds': 'Недостаточно средств на карте',
+            'card_expired': 'Срок действия карты истёк',
+            'auto_payment_creation_failed': 'Не удалось списать средства',
+        }
+        reason_text = reason_texts.get(reason, f'Техническая ошибка ({reason})')
+        
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить вручную", callback_data="subscribe_pro")],
+        ])
+        
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                "⚠️ <b>Не удалось продлить подписку</b>\n\n"
+                f"Причина: {reason_text}\n\n"
+                f"У вас есть ещё <b>{PRO_GRACE_PERIOD_DAYS} дня</b>, "
+                "чтобы продлить подписку вручную.\n"
+                "После этого аккаунт перейдёт на бесплатный план."
+            ),
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"❌ Не удалось уведомить user_id={user_id} о неудаче: {e}")
+
+
+async def cancel_auto_payment(user_id: int):
+    """Отключить автоплатёж"""
+    db = await get_db()
+    async with db.pool.acquire() as conn:
+        await conn.execute("""
+            UPDATE subscriptions
+            SET auto_pay_method_id = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = $1
+        """, user_id)
+    
+    logger.info(f"🔕 Автоплатёж отключён для user_id={user_id}")
