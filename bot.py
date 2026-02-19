@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -20,11 +21,18 @@ from services.reminder_service import (
     check_and_send_reminders, 
     check_monthly_photo_reminders
 )
+from services.seasonal_adjustment_service import (
+    adjust_all_plants_for_season,
+    migrate_base_intervals
+)
+from services.payment_service import process_auto_payments, handle_payment_webhook
+from services.subscription_service import reset_all_usage_limits
 
 # Импорты handlers
 from handlers import (
     commands, photo, callbacks, plants, 
-    questions, feedback, onboarding, growing, admin
+    questions, feedback, onboarding, growing, admin,
+    subscription
 )
 
 # Импорт middleware
@@ -54,6 +62,9 @@ async def on_startup():
         # Инициализация базы данных
         await init_database()
         logger.info("✅ База данных инициализирована")
+        
+        # Миграция базовых интервалов (один раз)
+        await migrate_base_intervals()
         
         # Удаление старого webhook
         logger.info("🔧 Удаление старого webhook...")
@@ -124,6 +135,7 @@ def register_middleware():
 def register_handlers():
     """Регистрация всех handlers"""
     # Регистрация routers в правильном порядке
+    dp.include_router(subscription.router)  # Подписка — до commands чтобы /pro работал
     dp.include_router(commands.router)
     dp.include_router(photo.router)
     dp.include_router(plants.router)
@@ -173,6 +185,41 @@ def setup_scheduler():
     )
     logger.info(f"✅ Задача 'monthly_reminder_check' добавлена: ежедневно в 10:00 МСК")
     
+    # 🌍 СЕЗОННАЯ КОРРЕКТИРОВКА - 1 числа каждого месяца в 03:00 МСК
+    scheduler.add_job(
+        adjust_all_plants_for_season,
+        'cron',
+        day=1,
+        hour=3,
+        minute=0,
+        id='seasonal_adjustment',
+        replace_existing=True
+    )
+    logger.info(f"✅ Задача 'seasonal_adjustment' добавлена: 1 числа каждого месяца в 03:00 МСК")
+    
+    # 💳 АВТОПЛАТЕЖИ — ежедневно в 12:00 МСК
+    scheduler.add_job(
+        process_auto_payments,
+        'cron',
+        hour=12,
+        minute=0,
+        id='auto_payments',
+        replace_existing=True
+    )
+    logger.info(f"✅ Задача 'auto_payments' добавлена: ежедневно в 12:00 МСК")
+    
+    # 🔄 СБРОС ЛИМИТОВ — 1 числа каждого месяца в 00:05 МСК
+    scheduler.add_job(
+        reset_all_usage_limits,
+        'cron',
+        day=1,
+        hour=0,
+        minute=5,
+        id='reset_usage_limits',
+        replace_existing=True
+    )
+    logger.info(f"✅ Задача 'reset_usage_limits' добавлена: 1 числа каждого месяца в 00:05 МСК")
+    
     # КРИТИЧЕСКИ ВАЖНО: Запускаем планировщик
     scheduler.start()
     logger.info("")
@@ -215,6 +262,24 @@ async def webhook_handler(request):
         return web.Response(status=500)
 
 
+async def yookassa_webhook_handler(request):
+    """Webhook обработчик для YooKassa"""
+    try:
+        payload = await request.json()
+        logger.info(f"💳 YooKassa webhook получен: {payload.get('event', 'unknown')}")
+        
+        success = await handle_payment_webhook(payload)
+        
+        if success:
+            return web.Response(status=200)
+        else:
+            return web.Response(status=400)
+            
+    except Exception as e:
+        logger.error(f"❌ YooKassa webhook error: {e}", exc_info=True)
+        return web.Response(status=500)
+
+
 async def health_check(request):
     """Health check endpoint"""
     from utils.time_utils import get_moscow_now
@@ -235,7 +300,7 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI", 
-        "version": "5.4 - Stats Removed",
+        "version": "6.0 - Subscription System",
         "time_msk": moscow_now.strftime('%Y-%m-%d %H:%M:%S'),
         "timezone": str(MOSCOW_TZ),
         "scheduler": {
@@ -249,7 +314,7 @@ async def health_check(request):
 async def main():
     """Main функция"""
     try:
-        logger.info("🚀 Запуск Bloom AI v5.4 (Stats Removed)...")
+        logger.info("🚀 Запуск Bloom AI v6.0 (Subscription System)...")
         
         await on_startup()
         
@@ -257,6 +322,7 @@ async def main():
             # Webhook mode
             app = web.Application()
             app.router.add_post('/webhook', webhook_handler)
+            app.router.add_post('/yookassa/webhook', yookassa_webhook_handler)
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
             
@@ -267,9 +333,10 @@ async def main():
             
             logger.info("")
             logger.info("=" * 70)
-            logger.info(f"🚀 BLOOM AI v5.4 УСПЕШНО ЗАПУЩЕН")
+            logger.info(f"🚀 BLOOM AI v6.0 УСПЕШНО ЗАПУЩЕН")
             logger.info(f"🌐 Порт: {PORT}")
             logger.info(f"📡 Webhook: {WEBHOOK_URL}/webhook")
+            logger.info(f"💳 YooKassa webhook: {WEBHOOK_URL}/yookassa/webhook")
             logger.info(f"❤️ Health check: {WEBHOOK_URL}/health")
             logger.info("=" * 70)
             
@@ -284,7 +351,7 @@ async def main():
             # Polling mode
             logger.info("")
             logger.info("=" * 70)
-            logger.info("🤖 BLOOM AI v5.4 В РЕЖИМЕ POLLING")
+            logger.info("🤖 BLOOM AI v6.0 В РЕЖИМЕ POLLING")
             logger.info("⏳ Ожидание сообщений от пользователей...")
             logger.info("=" * 70)
             
