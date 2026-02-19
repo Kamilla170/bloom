@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
@@ -9,14 +10,37 @@ from services.plant_service import (
     water_plant, water_all_plants, delete_plant, rename_plant,
     get_plant_details, get_plant_state_history
 )
+from services.subscription_service import check_limit
 from keyboards.main_menu import main_menu, simple_back_menu
 from keyboards.plant_menu import plant_control_menu, delete_confirmation
 from config import STATE_EMOJI, STATE_NAMES
 from database import get_db
+from utils.date_parser import parse_user_date, format_date_ago, get_days_offset
 
 logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+def last_watering_keyboard():
+    """Клавиатура для выбора даты последнего полива"""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(text="💧 Сегодня", callback_data="last_water_today"),
+            InlineKeyboardButton(text="💧 Вчера", callback_data="last_water_yesterday")
+        ],
+        [
+            InlineKeyboardButton(text="💧 2-3 дня назад", callback_data="last_water_2_3_days"),
+            InlineKeyboardButton(text="💧 Неделю назад", callback_data="last_water_week")
+        ],
+        [
+            InlineKeyboardButton(text="🤷 Не помню / Пропустить", callback_data="last_water_skip")
+        ]
+    ]
+    
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 async def show_plants_list(message: types.Message):
@@ -161,6 +185,15 @@ async def water_single_plant_callback(callback: types.CallbackQuery):
                 f"⏰ Следующее напоминание через {result['next_watering_days']} дней",
                 parse_mode="HTML"
             )
+            
+            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого полива ===
+            from handlers.onboarding import send_tip_if_needed, TIP_AFTER_WATERING
+            
+            async def _send_watering_tip():
+                await callback.message.answer(TIP_AFTER_WATERING)
+            
+            await send_tip_if_needed(user_id, 'watering', _send_watering_tip)
+            
         else:
             await callback.answer(f"❌ {result['error']}", show_alert=True)
         
@@ -185,6 +218,15 @@ async def water_plants_callback(callback: types.CallbackQuery):
                 parse_mode="HTML",
                 reply_markup=simple_back_menu()
             )
+            
+            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого полива ===
+            from handlers.onboarding import send_tip_if_needed, TIP_AFTER_WATERING
+            
+            async def _send_watering_tip():
+                await callback.message.answer(TIP_AFTER_WATERING)
+            
+            await send_tip_if_needed(user_id, 'watering', _send_watering_tip)
+            
         else:
             await callback.message.answer("❌ Ошибка")
         
@@ -436,34 +478,167 @@ async def snooze_reminder_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-async def save_plant_handler(callback: types.CallbackQuery):
-    """Сохранение проанализированного растения"""
+# === СОХРАНЕНИЕ РАСТЕНИЯ С ВЫБОРОМ ДАТЫ ПОЛИВА ===
+
+async def save_plant_handler(callback: types.CallbackQuery, state: FSMContext):
+    """Начало сохранения - показываем выбор даты последнего полива"""
     user_id = callback.from_user.id
     
-    if user_id in temp_analyses:
-        try:
-            analysis_data = temp_analyses[user_id]
-            
-            result = await save_analyzed_plant(user_id, analysis_data)
-            
-            if result["success"]:
-                del temp_analyses[user_id]
-                
-                success_text = f"✅ <b>Растение добавлено!</b>\n\n"
-                success_text += f"🌱 <b>{result['plant_name']}</b> в вашей коллекции\n"
-                success_text += f"{result['state_emoji']} <b>Состояние:</b> {result['state_name']}\n"
-                success_text += f"⏰ Интервал полива: {result['interval']} дней\n\n"
-                success_text += f"🧠 <b>Система памяти активирована!</b>\n"
-                success_text += f"Теперь я буду помнить всю историю этого растения"
-                
-                await callback.message.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
-            else:
-                await callback.message.answer(f"❌ {result['error']}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка сохранения: {e}")
-            await callback.message.answer("❌ Ошибка сохранения")
-    else:
+    logger.info(f"💾 save_plant_handler вызван для user_id={user_id}")
+    
+    if user_id not in temp_analyses:
         await callback.message.answer("❌ Нет данных. Сначала проанализируйте растение")
+        await callback.answer()
+        return
+    
+    # Проверка лимита растений
+    allowed, error_msg = await check_limit(user_id, 'plants')
+    if not allowed:
+        from handlers.subscription import send_limit_message
+        await send_limit_message(callback, error_msg)
+        return
+    
+    analysis_data = temp_analyses[user_id]
+    plant_name = analysis_data.get("plant_name", "растение")
+    
+    # Устанавливаем состояние ожидания даты полива
+    await state.update_data(saving_plant=True)
+    await state.set_state(PlantStates.waiting_last_watering)
+    
+    logger.info(f"✅ Состояние установлено: waiting_last_watering для user_id={user_id}")
+    
+    await callback.message.answer(
+        f"💧 <b>Когда последний раз поливали {plant_name}?</b>\n\n"
+        f"Это поможет точнее рассчитать следующий полив.\n\n"
+        f"💡 <i>Можете нажать кнопку или написать дату в чат</i>\n"
+        f"<i>Примеры: «вчера», «3 дня назад», «25.01»</i>",
+        parse_mode="HTML",
+        reply_markup=last_watering_keyboard()
+    )
     
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("last_water_"))
+async def handle_last_water_choice(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора даты полива кнопкой"""
+    user_id = callback.from_user.id
+    choice = callback.data.replace("last_water_", "")
+    
+    if user_id not in temp_analyses:
+        await callback.message.answer("❌ Данные потеряны. Проанализируйте растение заново.")
+        await state.clear()
+        await callback.answer()
+        return
+    
+    # Определяем дату последнего полива
+    now = datetime.now()
+    last_watered = None
+    
+    if choice == "today":
+        last_watered = now
+    elif choice == "yesterday":
+        last_watered = now - timedelta(days=1)
+    elif choice == "2_3_days":
+        last_watered = now - timedelta(days=2)
+    elif choice == "week":
+        last_watered = now - timedelta(days=7)
+    elif choice == "skip":
+        last_watered = None  # Не устанавливаем
+    
+    # Сохраняем растение
+    await finish_save_plant(callback.message, user_id, last_watered, state)
+    await callback.answer()
+
+
+@router.message(StateFilter(PlantStates.waiting_last_watering))
+async def handle_last_water_text(message: types.Message, state: FSMContext):
+    """Обработка текстового ввода даты полива"""
+    user_id = message.from_user.id
+    
+    logger.info(f"📅 handle_last_water_text вызван для user_id={user_id}, текст='{message.text}'")
+    
+    if user_id not in temp_analyses:
+        await message.reply("❌ Данные потеряны. Проанализируйте растение заново.")
+        await state.clear()
+        return
+    
+    # Пробуем распарсить дату
+    parsed_date = parse_user_date(message.text)
+    
+    logger.info(f"📅 Результат парсинга: {parsed_date}")
+    
+    if parsed_date:
+        # Успешно распарсили
+        await finish_save_plant(message, user_id, parsed_date, state)
+    else:
+        # Не удалось распарсить - просим уточнить
+        await message.reply(
+            "🤔 <b>Не могу понять дату</b>\n\n"
+            "Попробуйте написать иначе:\n"
+            "• <i>вчера</i>\n"
+            "• <i>3 дня назад</i>\n"
+            "• <i>25.01</i> или <i>25 января</i>\n\n"
+            "Или нажмите одну из кнопок выше ☝️",
+            parse_mode="HTML"
+        )
+
+
+async def finish_save_plant(message_or_callback, user_id: int, last_watered: datetime, state: FSMContext):
+    """Завершение сохранения растения"""
+    try:
+        analysis_data = temp_analyses[user_id]
+        
+        # Передаём дату последнего полива в save_analyzed_plant
+        result = await save_analyzed_plant(user_id, analysis_data, last_watered=last_watered)
+        
+        if result["success"]:
+            del temp_analyses[user_id]
+            
+            # Формируем сообщение об успехе
+            success_text = f"✅ <b>Растение добавлено!</b>\n\n"
+            success_text += f"🌱 <b>{result['plant_name']}</b> в вашей коллекции\n"
+            success_text += f"{result['state_emoji']} <b>Состояние:</b> {result['state_name']}\n"
+            
+            if last_watered:
+                water_ago = format_date_ago(last_watered)
+                success_text += f"💧 <b>Последний полив:</b> {water_ago}\n"
+            
+            success_text += f"⏰ <b>Следующий полив:</b> через {result['next_watering_days']} дней\n\n"
+            success_text += f"🧠 <b>Система памяти активирована!</b>\n"
+            success_text += f"Теперь я буду помнить всю историю этого растения"
+            
+            # Отправляем сообщение
+            if isinstance(message_or_callback, types.Message):
+                await message_or_callback.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
+            else:
+                await message_or_callback.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
+            
+            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого сохранения ===
+            from handlers.onboarding import send_tip_if_needed, TIP_AFTER_SAVE
+            
+            async def _send_save_tip():
+                if isinstance(message_or_callback, types.Message):
+                    await message_or_callback.answer(TIP_AFTER_SAVE)
+                else:
+                    await message_or_callback.answer(TIP_AFTER_SAVE)
+            
+            await send_tip_if_needed(user_id, 'save', _send_save_tip)
+            
+        else:
+            error_msg = f"❌ {result['error']}"
+            if isinstance(message_or_callback, types.Message):
+                await message_or_callback.answer(error_msg)
+            else:
+                await message_or_callback.answer(error_msg)
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Ошибка сохранения: {e}", exc_info=True)
+        error_msg = "❌ Ошибка сохранения"
+        if isinstance(message_or_callback, types.Message):
+            await message_or_callback.answer(error_msg)
+        else:
+            await message_or_callback.answer(error_msg)
+        await state.clear()
