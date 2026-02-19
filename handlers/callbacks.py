@@ -3,7 +3,7 @@ from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 
 from keyboards.main_menu import main_menu, simple_back_menu
-from states.user_states import PlantStates
+from states.user_states import PlantStates, FeedbackStates
 from database import get_db
 
 logger = logging.getLogger(__name__)
@@ -39,20 +39,15 @@ async def reanalyze_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data == "question")
-async def question_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Спросить ИИ"""
-    await callback.message.answer("🤖 <b>Спросите ИИ о растениях</b>\n\n✍️ Напишите ваш вопрос:", parse_mode="HTML")
-    await state.set_state(PlantStates.waiting_question)
-    await callback.answer()
+# Обработчик "question" перенесён в handlers/questions.py
 
 
 @router.callback_query(F.data == "ask_about")
 async def ask_about_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Вопрос о текущем растении"""
-    await callback.message.answer("🤖 <b>Спросите ИИ о растении</b>\n\n✍️ Напишите вопрос:", parse_mode="HTML")
-    await state.set_state(PlantStates.waiting_question)
-    await callback.answer()
+    """Вопрос о текущем растении (legacy - для обратной совместимости)"""
+    # Перенаправляем в новый режим вопросов
+    from handlers.questions import start_question_mode_callback
+    await start_question_mode_callback(callback, state)
 
 
 @router.callback_query(F.data == "help")
@@ -66,8 +61,49 @@ async def help_callback(callback: types.CallbackQuery):
 @router.callback_query(F.data == "stats")
 async def stats_callback(callback: types.CallbackQuery):
     """Статистика"""
-    from handlers.commands import stats_command
-    await stats_command(callback.message)
+    # ВАЖНО: берём user_id из callback, а не из message (message.from_user - это бот!)
+    user_id = callback.from_user.id
+    
+    try:
+        from database import get_db
+        from keyboards.main_menu import main_menu
+        from datetime import datetime
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        logger.info(f"📊 Запрос статистики (callback) от user_id={user_id}")
+        
+        db = await get_db()
+        stats = await db.get_user_stats(user_id)
+        
+        logger.info(f"📊 Статистика для user_id={user_id}: plants={stats['total_plants']}, waterings={stats['total_waterings']}")
+        
+        stats_text = f"📊 <b>Ваша статистика</b>\n\n"
+        stats_text += f"🌱 <b>Растений:</b> {stats['total_plants']}\n"
+        stats_text += f"💧 <b>Поливов:</b> {stats['total_waterings']}\n"
+        
+        if stats['total_growing'] > 0:
+            stats_text += f"\n🌿 <b>Выращивание:</b>\n"
+            stats_text += f"• Активных: {stats['active_growing']}\n"
+            stats_text += f"• Завершенных: {stats['completed_growing']}\n"
+        
+        if stats['first_plant_date']:
+            days_using = (datetime.now().date() - stats['first_plant_date'].date()).days
+            stats_text += f"\n📅 <b>Используете бота:</b> {days_using} дней\n"
+        
+        stats_text += f"\n🎯 <b>Продолжайте ухаживать за растениями!</b>"
+        
+        await callback.message.answer(
+            stats_text,
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+        
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"❌ Ошибка статистики: {e}", exc_info=True)
+        await callback.message.answer("❌ Ошибка загрузки статистики")
+    
     await callback.answer()
 
 
@@ -78,28 +114,11 @@ async def my_plants_callback(callback: types.CallbackQuery):
     await show_plants_collection(callback)
 
 
-@router.callback_query(F.data == "grow_from_scratch")
-async def grow_from_scratch_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Выращивание с нуля"""
-    await state.clear()
-    
-    await callback.message.answer(
-        "🌿 <b>Выращиваем растение с нуля!</b>\n\n"
-        "🌱 <b>Напишите, что хотите вырастить:</b>\n\n"
-        "💡 <b>Примеры:</b> Базилик, Герань, Тюльпаны, Фикус, Помидоры\n\n"
-        "✍️ Просто напишите название!",
-        parse_mode="HTML"
-    )
-    
-    await state.set_state(PlantStates.choosing_plant_to_grow)
-    await callback.answer()
-
-
 @router.callback_query(F.data == "save_plant")
-async def save_plant_callback(callback: types.CallbackQuery):
-    """Сохранить проанализированное растение"""
+async def save_plant_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Сохранить проанализированное растение - теперь с выбором даты полива"""
     from handlers.plants import save_plant_handler
-    await save_plant_handler(callback)
+    await save_plant_handler(callback, state)
 
 
 @router.callback_query(F.data == "toggle_reminders")
@@ -197,7 +216,9 @@ async def snooze_monthly_reminder_callback(callback: types.CallbackQuery):
 
 
 @router.callback_query(F.data == "feedback")
-async def feedback_callback(callback: types.CallbackQuery):
-    """Меню обратной связи"""
-    from handlers.feedback import show_feedback_menu
-    await show_feedback_menu(callback)
+async def feedback_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обратная связь - упрощённая версия"""
+    from handlers.feedback import show_feedback_prompt
+    await state.set_state(FeedbackStates.writing_message)
+    await show_feedback_prompt(callback)
+    await callback.answer()
