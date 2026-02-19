@@ -2,6 +2,7 @@ import logging
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
+from aiogram.types import ReplyKeyboardRemove, ForceReply
 
 from states.user_states import FeedbackStates
 from keyboards.main_menu import main_menu
@@ -12,45 +13,39 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-async def show_feedback_menu(callback: types.CallbackQuery):
-    """Показать меню обратной связи"""
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    
-    keyboard = [
-        [InlineKeyboardButton(text="🐛 Сообщить о баге", callback_data="feedback_bug")],
-        [InlineKeyboardButton(text="❌ Неточный анализ", callback_data="feedback_analysis_error")],
-        [InlineKeyboardButton(text="💡 Предложение", callback_data="feedback_suggestion")],
-        [InlineKeyboardButton(text="⭐ Общий отзыв", callback_data="feedback_review")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-    ]
-    
-    await callback.message.answer(
-        "📝 <b>Обратная связь</b>\n\nВыберите тип:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+async def show_feedback_prompt(message_or_callback):
+    """Показать запрос обратной связи"""
+    text = (
+        "📝 <b>Обратная связь</b>\n\n"
+        "Мы будем очень благодарны за оставленную вами обратную связь. "
+        "Напишите сообщение, мы постараемся ответить в течение 24 часов."
     )
-    await callback.answer()
+    
+    # ForceReply заставляет Telegram показать поле ввода с подсказкой
+    reply_markup = ForceReply(
+        input_field_placeholder="Напишите обратную связь",
+        selective=True
+    )
+    
+    if isinstance(message_or_callback, types.CallbackQuery):
+        await message_or_callback.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    else:
+        await message_or_callback.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
 
 
-@router.callback_query(F.data.startswith("feedback_"))
-async def feedback_type_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Выбор типа обратной связи"""
-    feedback_type = callback.data.replace("feedback_", "")
-    
-    type_messages = {
-        "bug": "🐛 <b>Сообщить о баге</b>\n\nОпишите проблему:",
-        "analysis_error": "❌ <b>Неточный анализ</b>\n\nРасскажите о неправильном определении:",
-        "suggestion": "💡 <b>Предложение</b>\n\nПоделитесь идеей:",
-        "review": "⭐ <b>Общий отзыв</b>\n\nПоделитесь впечатлениями:"
-    }
-    
-    await state.update_data(feedback_type=feedback_type)
+@router.callback_query(F.data == "feedback")
+async def feedback_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Callback на кнопку обратной связи"""
     await state.set_state(FeedbackStates.writing_message)
-    
-    await callback.message.answer(
-        type_messages.get(feedback_type, "Напишите сообщение:"),
-        parse_mode="HTML"
-    )
+    await show_feedback_prompt(callback)
     await callback.answer()
 
 
@@ -68,11 +63,8 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
             return
         
         if feedback_text and len(feedback_text) < 5:
-            await message.reply("📝 Слишком короткое (минимум 5 символов)")
+            await message.reply("📝 Слишком короткое сообщение (минимум 5 символов)")
             return
-        
-        data = await state.get_data()
-        feedback_type = data.get('feedback_type', 'review')
         
         user_id = message.from_user.id
         username = message.from_user.username or message.from_user.first_name or f"user_{user_id}"
@@ -81,13 +73,23 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
         await db.save_feedback(
             user_id=user_id,
             username=username,
-            feedback_type=feedback_type,
+            feedback_type='general',  # Единый тип для всей обратной связи
             message=feedback_text or "Фото без комментария",
             photo_file_id=feedback_photo
         )
         
+        # Убираем ForceReply клавиатуру
         await message.answer(
-            "✅ <b>Спасибо за отзыв!</b>\n\nВаше сообщение поможет улучшить бота.",
+            "✅ <b>Спасибо за обратную связь!</b>\n\n"
+            "Ваше сообщение отправлено команде Bloom. "
+            "Мы ответим вам в ближайшее время.",
+            parse_mode="HTML",
+            reply_markup=ReplyKeyboardRemove()  # Убираем принудительный ответ
+        )
+        
+        # Показываем главное меню
+        await message.answer(
+            "🌱 <b>Главное меню</b>",
             parse_mode="HTML",
             reply_markup=main_menu()
         )
