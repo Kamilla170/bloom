@@ -65,12 +65,12 @@ async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dic
             "type": "redirect",
             "return_url": return_url
         },
-        "description": f"Bloom AI PRO подписка (пользователь {user_id})",
+        "description": f"Bloom AI подписка (пользователь {user_id})",
         "metadata": {
             "user_id": str(user_id),
             "type": "subscription"
-            "save_payment_method": save_method,
         },
+        "save_payment_method": save_method,
     }
     
     try:
@@ -132,7 +132,7 @@ async def create_recurring_payment(user_id: int, payment_method_id: str) -> Opti
         },
         "capture": True,
         "payment_method_id": payment_method_id,
-        "description": f"Bloom AI PRO — автопродление (пользователь {user_id})",
+        "description": f"Bloom AI — автопродление (пользователь {user_id})",
         "metadata": {
             "user_id": str(user_id),
             "type": "recurring"
@@ -232,7 +232,7 @@ async def handle_payment_webhook(payload: dict) -> bool:
                 payment_method_id=payment_method_id
             )
             
-            logger.info(f"✅ PRO активирован для user_id={user_id}, expires={expires_at}")
+            logger.info(f"✅ Подписка активирована для user_id={user_id}, expires={expires_at}")
             
             # Отправляем уведомление пользователю
             await _notify_user_payment_success(user_id, expires_at)
@@ -299,8 +299,8 @@ async def _notify_user_payment_success(user_id: int, expires_at: datetime):
         await bot.send_message(
             chat_id=user_id,
             text=(
-                "🎉 <b>PRO подписка активирована!</b>\n\n"
-                f"✅ Ваш план: <b>PRO</b>\n"
+                "🎉 <b>Подписка активирована!</b>\n\n"
+                f"✅ Ваш план: <b>Подписка</b>\n"
                 f"📅 Активна до: <b>{expires_str}</b>\n\n"
                 "🌱 Теперь у вас безлимитный доступ:\n"
                 "• Неограниченные растения\n"
@@ -349,7 +349,8 @@ async def _notify_user_payment_failed(user_id: int, reason: str):
 
 
 async def cancel_auto_payment(user_id: int):
-    """Отключить автоплатёж"""
+    """Отключить автоплатёж и удалить сохранённый метод оплаты"""
+    from database import get_db
     db = await get_db()
     async with db.pool.acquire() as conn:
         await conn.execute("""
@@ -358,4 +359,4 @@ async def cancel_auto_payment(user_id: int):
             WHERE user_id = $1
         """, user_id)
     
-    logger.info(f"🔕 Автоплатёж отключён для user_id={user_id}")
+    logger.info(f"🔕 Автоплатёж отключён, карта отвязана для user_id={user_id}")
