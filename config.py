@@ -35,8 +35,36 @@ FREE_LIMITS = {
     'questions': 1,     # вопросов в месяц
 }
 
-# Стоимость PRO подписки
-PRO_PRICE = 199  # рублей в месяц
+# Тарифные планы подписки
+SUBSCRIPTION_PLANS = {
+    '1month': {
+        'label': '1 месяц',
+        'price': 199,
+        'days': 30,
+        'per_month': 199,
+    },
+    '3months': {
+        'label': '3 месяца',
+        'price': 549,
+        'days': 90,
+        'per_month': 183,
+    },
+    '6months': {
+        'label': '6 месяцев',
+        'price': 1049,
+        'days': 180,
+        'per_month': 174,
+    },
+    '12months': {
+        'label': '12 месяцев',
+        'price': 1999,
+        'days': 365,
+        'per_month': 166,
+    },
+}
+
+# Для обратной совместимости
+PRO_PRICE = 199  # цена базового плана
 PRO_DURATION_DAYS = 30
 PRO_GRACE_PERIOD_DAYS = 3  # дней после неудачного автоплатежа
 
