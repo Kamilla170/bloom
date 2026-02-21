@@ -21,7 +21,7 @@ def plans_keyboard():
     buttons = []
     for plan_id, plan in SUBSCRIPTION_PLANS.items():
         if plan['days'] > 30:
-            text = f"📦 {plan['label']} — {plan['price']}₽ ({plan['per_month']}₽/мес)"
+            text = f"⭐ {plan['label']} — {plan['price']}₽ ({plan['per_month']}₽/мес)"
         else:
             text = f"⭐ {plan['label']} — {plan['price']}₽/мес"
         buttons.append([InlineKeyboardButton(
@@ -188,7 +188,7 @@ async def buy_plan_callback(callback: types.CallbackQuery):
         
         await callback.message.answer(
             f"💳 <b>Оплата подписки</b>\n\n"
-            f"📦 Тариф: <b>{plan['label']}</b>\n"
+            f"⭐ Тариф: <b>{plan['label']}</b>\n"
             f"💰 Сумма: <b>{plan['price']}₽</b>\n"
             f"📅 Период: <b>{plan['days']} дней</b>"
             f"{auto_text}\n\n"
