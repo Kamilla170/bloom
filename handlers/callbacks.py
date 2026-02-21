@@ -12,8 +12,9 @@ router = Router()
 
 
 @router.callback_query(F.data == "menu")
-async def menu_callback(callback: types.CallbackQuery):
+async def menu_callback(callback: types.CallbackQuery, state: FSMContext):
     """Главное меню"""
+    await state.clear()
     await callback.message.answer("🌱 <b>Главное меню</b>", parse_mode="HTML", reply_markup=main_menu())
     await callback.answer()
 
