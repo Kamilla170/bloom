@@ -25,7 +25,7 @@ YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY")
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 
 # Администраторы (получают ежедневную статистику)
-ADMIN_USER_IDS = [455263261, 8390994875]
+ADMIN_USER_IDS = [455263261]
 
 # === ПОДПИСКА ===
 # Лимиты бесплатного плана (в месяц)
