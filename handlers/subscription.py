@@ -34,10 +34,10 @@ def subscription_manage_keyboard(plan_info: dict):
                 text="🔕 Отключить автопродление", 
                 callback_data="cancel_auto_pay"
             )])
-            buttons.append([InlineKeyboardButton(
-                text="💳 Отвязать карту", 
-                callback_data="unlink_card"
-            )])
+        buttons.append([InlineKeyboardButton(
+            text="💳 Отвязать карту", 
+            callback_data="unlink_card"
+        )])
         buttons.append([InlineKeyboardButton(
             text="📊 Моя статистика", callback_data="stats"
         )])
@@ -144,7 +144,8 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
         await callback.message.answer(
             f"💳 <b>Оплата подписки</b>\n\n"
             f"💰 Сумма: <b>{PRO_PRICE}₽</b>\n"
-            f"📅 Период: <b>30 дней</b>\n\n"
+            f"📅 Период: <b>30 дней</b>\n"
+            f"🔄 Автопродление: включено\n\n"
             f"Нажмите кнопку ниже для перехода к оплате.\n"
             f"После оплаты подписка активируется автоматически.",
             parse_mode="HTML",
@@ -183,14 +184,16 @@ async def cancel_auto_pay_callback(callback: types.CallbackQuery):
 
 @router.callback_query(F.data == "unlink_card")
 async def unlink_card_callback(callback: types.CallbackQuery):
-    """Отвязка карты"""
+    """Отвязка карты — удаляет сохранённый метод оплаты"""
     user_id = callback.from_user.id
     
     await cancel_auto_payment(user_id)
     
     await callback.message.answer(
         "💳 <b>Карта отвязана</b>\n\n"
-        "Автопродление отключено. Для следующей оплаты нужно будет ввести данные карты заново.",
+        "Сохранённый способ оплаты удалён из системы.\n"
+        "Автопродление отключено.\n\n"
+        "Для следующей оплаты нужно будет ввести данные карты заново.",
         parse_mode="HTML"
     )
     
