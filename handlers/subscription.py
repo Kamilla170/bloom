@@ -34,6 +34,10 @@ def subscription_manage_keyboard(plan_info: dict):
                 text="🔕 Отключить автопродление", 
                 callback_data="cancel_auto_pay"
             )])
+            buttons.append([InlineKeyboardButton(
+                text="💳 Отвязать карту", 
+                callback_data="unlink_card"
+            )])
         buttons.append([InlineKeyboardButton(
             text="📊 Моя статистика", callback_data="stats"
         )])
@@ -115,7 +119,7 @@ async def subscription_command(message: types.Message):
 @router.callback_query(F.data == "subscribe_pro")
 async def subscribe_pro_callback(callback: types.CallbackQuery):
     """Оформление подписки — создание платежа"""
-    user_id = callback.from_user.id  # ИСПРАВЛЕНО: было callback.message.from_user.id
+    user_id = callback.from_user.id
     
     # Проверяем, может уже есть подписка
     if await is_pro(user_id):
@@ -140,8 +144,7 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
         await callback.message.answer(
             f"💳 <b>Оплата подписки</b>\n\n"
             f"💰 Сумма: <b>{PRO_PRICE}₽</b>\n"
-            f"📅 Период: <b>30 дней</b>\n"
-            f"🔄 Автопродление: включено\n\n"
+            f"📅 Период: <b>30 дней</b>\n\n"
             f"Нажмите кнопку ниже для перехода к оплате.\n"
             f"После оплаты подписка активируется автоматически.",
             parse_mode="HTML",
@@ -160,7 +163,7 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
 @router.callback_query(F.data == "cancel_auto_pay")
 async def cancel_auto_pay_callback(callback: types.CallbackQuery):
     """Отключение автопродления"""
-    user_id = callback.from_user.id  # ИСПРАВЛЕНО: было callback.message.from_user.id
+    user_id = callback.from_user.id
     
     await cancel_auto_payment(user_id)
     
@@ -178,10 +181,26 @@ async def cancel_auto_pay_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "unlink_card")
+async def unlink_card_callback(callback: types.CallbackQuery):
+    """Отвязка карты"""
+    user_id = callback.from_user.id
+    
+    await cancel_auto_payment(user_id)
+    
+    await callback.message.answer(
+        "💳 <b>Карта отвязана</b>\n\n"
+        "Автопродление отключено. Для следующей оплаты нужно будет ввести данные карты заново.",
+        parse_mode="HTML"
+    )
+    
+    await callback.answer()
+
+
 @router.callback_query(F.data == "show_subscription")
 async def show_subscription_callback(callback: types.CallbackQuery):
     """Показать информацию о подписке"""
-    user_id = callback.from_user.id  # ИСПРАВЛЕНО: было callback.message.from_user.id
+    user_id = callback.from_user.id
     
     plan_info = await get_user_plan(user_id)
     
@@ -191,7 +210,7 @@ async def show_subscription_callback(callback: types.CallbackQuery):
         grace_text = "\n⚠️ <b>Grace period — продлите подписку!</b>" if plan_info['is_grace_period'] else ""
         
         await callback.message.answer(
-            f"⭐ <b>Ваш план: PRO</b>\n\n"
+            f"⭐ <b>Ваш план: Подписка</b>\n\n"
             f"📅 Активна до: <b>{expires_str}</b>\n"
             f"📆 Осталось дней: <b>{plan_info['days_left']}</b>\n"
             f"{auto_text}"
