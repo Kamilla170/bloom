@@ -31,33 +31,37 @@ def _get_headers(idempotency_key: str = None) -> dict:
     return headers
 
 
-async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dict]:
+async def create_payment(user_id: int, amount: int = None, days: int = 30,
+                         plan_label: str = "1 месяц", save_method: bool = True) -> Optional[Dict]:
     """
     Создать платёж в YooKassa.
     
     Args:
         user_id: ID пользователя Telegram
+        amount: сумма платежа в рублях
+        days: количество дней подписки
+        plan_label: название тарифа для описания
         save_method: сохранить метод оплаты для автоплатежей
     
     Returns:
-        {
-            'payment_id': str,
-            'confirmation_url': str,
-            'status': str
-        }
-        или None при ошибке
+        dict с payment_id, confirmation_url, status или None
     """
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
         logger.error("❌ YooKassa не настроена: YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY отсутствуют")
         return None
     
+    if amount is None:
+        amount = PRO_PRICE
+    
     idempotency_key = str(uuid.uuid4())
     
     return_url = WEBHOOK_URL or "https://t.me/bloom_ai_bot"
     
+    description = f"Bloom AI подписка — {plan_label} (пользователь {user_id})"
+    
     payload = {
         "amount": {
-            "value": f"{PRO_PRICE}.00",
+            "value": f"{amount}.00",
             "currency": "RUB"
         },
         "capture": True,
@@ -65,10 +69,12 @@ async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dic
             "type": "redirect",
             "return_url": return_url
         },
-        "description": f"Bloom AI подписка (пользователь {user_id})",
+        "description": description,
         "metadata": {
             "user_id": str(user_id),
-            "type": "subscription"
+            "type": "subscription",
+            "days": str(days),
+            "plan_label": plan_label,
         },
         "save_payment_method": save_method,
     }
@@ -84,7 +90,7 @@ async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dic
                 data = await resp.json()
                 
                 if resp.status == 200:
-                    logger.info(f"✅ Платёж создан: {data['id']} для user_id={user_id}")
+                    logger.info(f"✅ Платёж создан: {data['id']} для user_id={user_id}, {plan_label}, {amount}₽")
                     
                     # Сохраняем платёж в БД
                     from database import get_db
@@ -93,7 +99,7 @@ async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dic
                         await conn.execute("""
                             INSERT INTO payments (payment_id, user_id, amount, currency, status, description, created_at)
                             VALUES ($1, $2, $3, 'RUB', $4, $5, CURRENT_TIMESTAMP)
-                        """, data['id'], user_id, PRO_PRICE, data['status'], payload['description'])
+                        """, data['id'], user_id, amount, data['status'], description)
                     
                     return {
                         'payment_id': data['id'],
@@ -112,13 +118,7 @@ async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dic
 async def create_recurring_payment(user_id: int, payment_method_id: str) -> Optional[Dict]:
     """
     Создать рекуррентный (автоматический) платёж.
-    
-    Args:
-        user_id: ID пользователя
-        payment_method_id: сохранённый метод оплаты
-    
-    Returns:
-        dict с результатом или None
+    Автопродление только для месячного тарифа.
     """
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
         return None
@@ -135,7 +135,8 @@ async def create_recurring_payment(user_id: int, payment_method_id: str) -> Opti
         "description": f"Bloom AI — автопродление (пользователь {user_id})",
         "metadata": {
             "user_id": str(user_id),
-            "type": "recurring"
+            "type": "recurring",
+            "days": "30",
         }
     }
     
@@ -176,12 +177,6 @@ async def create_recurring_payment(user_id: int, payment_method_id: str) -> Opti
 async def handle_payment_webhook(payload: dict) -> bool:
     """
     Обработка webhook от YooKassa.
-    
-    Args:
-        payload: тело запроса от YooKassa
-    
-    Returns:
-        True если обработано успешно
     """
     try:
         event_type = payload.get('event')
@@ -196,8 +191,9 @@ async def handle_payment_webhook(payload: dict) -> bool:
             return False
         
         user_id = int(user_id)
+        days = int(metadata.get('days', 30))
         
-        logger.info(f"💳 Webhook: event={event_type}, payment_id={payment_id}, status={status}, user_id={user_id}")
+        logger.info(f"💳 Webhook: event={event_type}, payment_id={payment_id}, status={status}, user_id={user_id}, days={days}")
         
         from database import get_db
         db = await get_db()
@@ -225,17 +221,19 @@ async def handle_payment_webhook(payload: dict) -> bool:
                     WHERE payment_id = $2
                 """, payment_method_id, payment_id)
             
-            # Активируем подписку
+            # Активируем подписку на нужное количество дней
             from services.subscription_service import activate_pro
             expires_at = await activate_pro(
                 user_id, 
+                days=days,
                 payment_method_id=payment_method_id
             )
             
-            logger.info(f"✅ Подписка активирована для user_id={user_id}, expires={expires_at}")
+            plan_label = metadata.get('plan_label', f'{days} дней')
+            logger.info(f"✅ Подписка активирована для user_id={user_id}, план={plan_label}, expires={expires_at}")
             
             # Отправляем уведомление пользователю
-            await _notify_user_payment_success(user_id, expires_at)
+            await _notify_user_payment_success(user_id, expires_at, plan_label)
             
             return True
         
@@ -289,18 +287,20 @@ async def process_auto_payments():
             await _notify_user_payment_failed(user_id, "auto_payment_creation_failed")
 
 
-async def _notify_user_payment_success(user_id: int, expires_at: datetime):
+async def _notify_user_payment_success(user_id: int, expires_at: datetime, plan_label: str = ""):
     """Уведомить пользователя об успешной оплате"""
     try:
         from bot import bot
         
         expires_str = expires_at.strftime('%d.%m.%Y')
+        plan_text = f"\n📦 Тариф: <b>{plan_label}</b>" if plan_label else ""
         
         await bot.send_message(
             chat_id=user_id,
             text=(
                 "🎉 <b>Подписка активирована!</b>\n\n"
-                f"✅ Ваш план: <b>Подписка</b>\n"
+                f"✅ Ваш план: <b>Подписка</b>"
+                f"{plan_text}\n"
                 f"📅 Активна до: <b>{expires_str}</b>\n\n"
                 "🌱 Теперь у вас безлимитный доступ:\n"
                 "• Неограниченные растения\n"
