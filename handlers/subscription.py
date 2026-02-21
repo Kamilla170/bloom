@@ -4,7 +4,7 @@ from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import ADMIN_USER_IDS, PRO_PRICE, FREE_LIMITS
+from config import ADMIN_USER_IDS, SUBSCRIPTION_PLANS, FREE_LIMITS
 from database import get_db
 from services.subscription_service import (
     get_user_plan, get_usage_stats, activate_pro, revoke_pro, is_pro
@@ -16,12 +16,20 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-def pro_button_keyboard():
-    """Клавиатура с кнопкой подписки"""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"⭐ Оформить подписку — {PRO_PRICE}₽/мес", callback_data="subscribe_pro")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
-    ])
+def plans_keyboard():
+    """Клавиатура с выбором тарифа"""
+    buttons = []
+    for plan_id, plan in SUBSCRIPTION_PLANS.items():
+        if plan['days'] > 30:
+            text = f"📦 {plan['label']} — {plan['price']}₽ ({plan['per_month']}₽/мес)"
+        else:
+            text = f"⭐ {plan['label']} — {plan['price']}₽/мес"
+        buttons.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"buy_{plan_id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def subscription_manage_keyboard(plan_info: dict):
@@ -43,7 +51,7 @@ def subscription_manage_keyboard(plan_info: dict):
         )])
     else:
         buttons.append([InlineKeyboardButton(
-            text=f"⭐ Оформить подписку — {PRO_PRICE}₽/мес", 
+            text="⭐ Оформить подписку", 
             callback_data="subscribe_pro"
         )])
     
@@ -54,7 +62,7 @@ def subscription_manage_keyboard(plan_info: dict):
 
 async def send_limit_message(message_or_callback, error_text: str):
     """Отправить сообщение о достижении лимита"""
-    keyboard = pro_button_keyboard()
+    keyboard = plans_keyboard()
     
     if isinstance(message_or_callback, types.CallbackQuery):
         await message_or_callback.message.answer(
@@ -99,12 +107,12 @@ async def pro_command(message: types.Message):
             f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
             f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
             f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
-            f"<b>⭐ Подписка — {PRO_PRICE}₽/мес:</b>\n"
+            f"<b>⭐ Выберите тариф:</b>\n"
             f"• Неограниченное добавление растений\n"
             f"• Безлимитное количество анализов растений\n"
             f"• Поддержка 24/7 по всем вопросам о растениях\n",
             parse_mode="HTML",
-            reply_markup=pro_button_keyboard()
+            reply_markup=plans_keyboard()
         )
 
 
@@ -118,10 +126,36 @@ async def subscription_command(message: types.Message):
 
 @router.callback_query(F.data == "subscribe_pro")
 async def subscribe_pro_callback(callback: types.CallbackQuery):
-    """Оформление подписки — создание платежа"""
+    """Показать выбор тарифа"""
     user_id = callback.from_user.id
     
-    # Проверяем, может уже есть подписка
+    if await is_pro(user_id):
+        await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
+        return
+    
+    await callback.message.answer(
+        "⭐ <b>Выберите тариф подписки:</b>\n\n"
+        "• Неограниченное добавление растений\n"
+        "• Безлимитное количество анализов растений\n"
+        "• Поддержка 24/7 по всем вопросам о растениях\n",
+        parse_mode="HTML",
+        reply_markup=plans_keyboard()
+    )
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("buy_"))
+async def buy_plan_callback(callback: types.CallbackQuery):
+    """Оформление подписки — создание платежа для выбранного тарифа"""
+    user_id = callback.from_user.id
+    plan_id = callback.data.replace("buy_", "")
+    
+    plan = SUBSCRIPTION_PLANS.get(plan_id)
+    if not plan:
+        await callback.answer("❌ Тариф не найден", show_alert=True)
+        return
+    
     if await is_pro(user_id):
         await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
         return
@@ -131,7 +165,16 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     
-    result = await create_payment(user_id, save_method=True)
+    # Автопродление только для месячного тарифа
+    save_method = (plan_id == '1month')
+    
+    result = await create_payment(
+        user_id=user_id,
+        amount=plan['price'],
+        days=plan['days'],
+        plan_label=plan['label'],
+        save_method=save_method
+    )
     
     await processing_msg.delete()
     
@@ -141,11 +184,14 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
         ])
         
+        auto_text = "\n🔄 Автопродление: включено" if save_method else ""
+        
         await callback.message.answer(
             f"💳 <b>Оплата подписки</b>\n\n"
-            f"💰 Сумма: <b>{PRO_PRICE}₽</b>\n"
-            f"📅 Период: <b>30 дней</b>\n"
-            f"🔄 Автопродление: включено\n\n"
+            f"📦 Тариф: <b>{plan['label']}</b>\n"
+            f"💰 Сумма: <b>{plan['price']}₽</b>\n"
+            f"📅 Период: <b>{plan['days']} дней</b>"
+            f"{auto_text}\n\n"
             f"Нажмите кнопку ниже для перехода к оплате.\n"
             f"После оплаты подписка активируется автоматически.",
             parse_mode="HTML",
@@ -231,12 +277,12 @@ async def show_subscription_callback(callback: types.CallbackQuery):
             f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
             f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
             f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
-            f"<b>⭐ Подписка — {PRO_PRICE}₽/мес:</b>\n"
+            f"<b>⭐ Выберите тариф:</b>\n"
             f"• Неограниченное добавление растений\n"
             f"• Безлимитное количество анализов растений\n"
             f"• Поддержка 24/7 по всем вопросам о растениях\n",
             parse_mode="HTML",
-            reply_markup=pro_button_keyboard()
+            reply_markup=plans_keyboard()
         )
     
     await callback.answer()
