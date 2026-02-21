@@ -2,7 +2,7 @@ import logging
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
-from aiogram.types import ReplyKeyboardRemove, ForceReply
+from aiogram.types import ReplyKeyboardRemove
 
 from states.user_states import FeedbackStates
 from keyboards.main_menu import main_menu
@@ -21,24 +21,10 @@ async def show_feedback_prompt(message_or_callback):
         "Напишите сообщение, мы постараемся ответить в течение 24 часов."
     )
     
-    # ForceReply заставляет Telegram показать поле ввода с подсказкой
-    reply_markup = ForceReply(
-        input_field_placeholder="Напишите обратную связь",
-        selective=True
-    )
-    
     if isinstance(message_or_callback, types.CallbackQuery):
-        await message_or_callback.message.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        await message_or_callback.message.answer(text, parse_mode="HTML")
     else:
-        await message_or_callback.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        await message_or_callback.answer(text, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "feedback")
@@ -73,18 +59,17 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
         await db.save_feedback(
             user_id=user_id,
             username=username,
-            feedback_type='general',  # Единый тип для всей обратной связи
+            feedback_type='general',
             message=feedback_text or "Фото без комментария",
             photo_file_id=feedback_photo
         )
         
-        # Убираем ForceReply клавиатуру
         await message.answer(
             "✅ <b>Спасибо за обратную связь!</b>\n\n"
             "Ваше сообщение отправлено команде Bloom. "
             "Мы ответим вам в ближайшее время.",
             parse_mode="HTML",
-            reply_markup=ReplyKeyboardRemove()  # Убираем принудительный ответ
+            reply_markup=ReplyKeyboardRemove()
         )
         
         # Показываем главное меню
