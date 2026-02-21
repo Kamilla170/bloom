@@ -48,6 +48,9 @@ dp = Dispatcher(storage=MemoryStorage())
 # Планировщик
 scheduler = AsyncIOScheduler(timezone=MOSCOW_TZ)
 
+# Путь с токеном для webhook (безопасность)
+WEBHOOK_TOKEN_PATH = BOT_TOKEN.split(':')[1]
+
 
 async def on_startup():
     """Инициализация при запуске"""
@@ -87,8 +90,9 @@ async def on_startup():
         
         # Установка webhook или polling
         if WEBHOOK_URL:
-            await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-            logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}/webhook")
+            webhook_full_url = f"{WEBHOOK_URL}/webhook/{WEBHOOK_TOKEN_PATH}"
+            await bot.set_webhook(webhook_full_url)
+            logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}/webhook/***")
         else:
             logger.info("✅ Polling mode активирован")
         
@@ -250,7 +254,7 @@ async def webhook_handler(request):
         index = url.rfind('/')
         token = url[index + 1:]
         
-        if token == BOT_TOKEN.split(':')[1]:
+        if token == WEBHOOK_TOKEN_PATH:
             update = types.Update.model_validate(await request.json(), strict=False)
             await dp.feed_update(bot, update)
             return web.Response()
@@ -321,7 +325,7 @@ async def main():
         if WEBHOOK_URL:
             # Webhook mode
             app = web.Application()
-            app.router.add_post('/webhook', webhook_handler)
+            app.router.add_post(f'/webhook/{WEBHOOK_TOKEN_PATH}', webhook_handler)
             app.router.add_post('/yookassa/webhook', yookassa_webhook_handler)
             app.router.add_get('/health', health_check)
             app.router.add_get('/', health_check)
@@ -335,7 +339,7 @@ async def main():
             logger.info("=" * 70)
             logger.info(f"🚀 BLOOM AI v6.0 УСПЕШНО ЗАПУЩЕН")
             logger.info(f"🌐 Порт: {PORT}")
-            logger.info(f"📡 Webhook: {WEBHOOK_URL}/webhook")
+            logger.info(f"📡 Webhook: {WEBHOOK_URL}/webhook/***")
             logger.info(f"💳 YooKassa webhook: {WEBHOOK_URL}/yookassa/webhook")
             logger.info(f"❤️ Health check: {WEBHOOK_URL}/health")
             logger.info("=" * 70)
