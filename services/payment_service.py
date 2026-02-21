@@ -70,7 +70,6 @@ async def create_payment(user_id: int, save_method: bool = True) -> Optional[Dic
             "user_id": str(user_id),
             "type": "subscription"
         },
-        "save_payment_method": save_method,
     }
     
     try:
