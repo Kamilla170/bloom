@@ -3,9 +3,22 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
 
 from database import get_db
-from config import FREE_LIMITS, PRO_DURATION_DAYS, PRO_GRACE_PERIOD_DAYS, ADMIN_USER_IDS
+from config import FREE_LIMITS, PRO_DURATION_DAYS, PRO_GRACE_PERIOD_DAYS, PRO_PRICE, ADMIN_USER_IDS
 
 logger = logging.getLogger(__name__)
+
+
+async def ensure_plan_columns():
+    """Миграция: добавляем plan_amount и plan_days в subscriptions"""
+    db = await get_db()
+    async with db.pool.acquire() as conn:
+        await conn.execute("""
+            ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan_amount INTEGER DEFAULT 199;
+        """)
+        await conn.execute("""
+            ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS plan_days INTEGER DEFAULT 30;
+        """)
+    logger.info("✅ Миграция plan_amount/plan_days применена")
 
 
 async def get_user_plan(user_id: int) -> Dict:
@@ -115,7 +128,7 @@ async def check_limit(user_id: int, action: str) -> Tuple[bool, Optional[str]]:
         if count >= limit:
             return False, (
                 f"🌱 Достигнут лимит бесплатного плана: <b>{limit} растений</b>\n\n"
-                f"Оформите <b>подписку</b> за 199₽/мес для неограниченного доступа!"
+                f"Оформите <b>подписку</b> для неограниченного доступа!"
             )
         return True, None
     
@@ -123,7 +136,7 @@ async def check_limit(user_id: int, action: str) -> Tuple[bool, Optional[str]]:
         if usage['analyses_used'] >= limit:
             return False, (
                 f"📸 Достигнут лимит бесплатного плана: <b>{limit} анализа фото</b> в месяц\n\n"
-                f"Оформите <b>подписку</b> за 199₽/мес для неограниченного доступа!"
+                f"Оформите <b>подписку</b> для неограниченного доступа!"
             )
         return True, None
     
@@ -131,7 +144,7 @@ async def check_limit(user_id: int, action: str) -> Tuple[bool, Optional[str]]:
         if usage['questions_used'] >= limit:
             return False, (
                 f"🤖 Достигнут лимит бесплатного плана: <b>{limit} вопроса</b> в месяц\n\n"
-                f"Оформите <b>подписку</b> за 199₽/мес для неограниченного доступа!"
+                f"Оформите <b>подписку</b> для неограниченного доступа!"
             )
         return True, None
     
@@ -235,11 +248,17 @@ async def get_usage_stats(user_id: int) -> Dict:
     }
 
 
-async def activate_pro(user_id: int, days: int = PRO_DURATION_DAYS,
+async def activate_pro(user_id: int, days: int = PRO_DURATION_DAYS, amount: int = None,
                        payment_method_id: str = None, granted_by: int = None):
     """Активировать PRO подписку"""
     db = await get_db()
     now = datetime.now()
+    
+    if amount is None:
+        amount = PRO_PRICE
+    
+    # Миграция на случай первого запуска
+    await ensure_plan_columns()
     
     async with db.pool.acquire() as conn:
         # Проверяем существующую подписку
@@ -254,18 +273,21 @@ async def activate_pro(user_id: int, days: int = PRO_DURATION_DAYS,
             expires_at = now + timedelta(days=days)
         
         await conn.execute("""
-            INSERT INTO subscriptions (user_id, plan, expires_at, auto_pay_method_id, granted_by_admin, updated_at)
-            VALUES ($1, 'pro', $2, $3, $4, CURRENT_TIMESTAMP)
+            INSERT INTO subscriptions (user_id, plan, expires_at, auto_pay_method_id, 
+                                       granted_by_admin, plan_amount, plan_days, updated_at)
+            VALUES ($1, 'pro', $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
             ON CONFLICT (user_id) 
             DO UPDATE SET 
                 plan = 'pro',
                 expires_at = $2,
                 auto_pay_method_id = COALESCE($3, subscriptions.auto_pay_method_id),
                 granted_by_admin = $4,
+                plan_amount = $5,
+                plan_days = $6,
                 updated_at = CURRENT_TIMESTAMP
-        """, user_id, expires_at, payment_method_id, granted_by)
+        """, user_id, expires_at, payment_method_id, granted_by, amount, days)
     
-    logger.info(f"✅ PRO активирован для user_id={user_id}, expires={expires_at}, granted_by={granted_by}")
+    logger.info(f"✅ PRO активирован для user_id={user_id}, {amount}₽/{days}д, expires={expires_at}")
     return expires_at
 
 
@@ -309,9 +331,13 @@ async def get_expiring_subscriptions(days_before: int = 1) -> list:
     now = datetime.now()
     target_date = now + timedelta(days=days_before)
     
+    await ensure_plan_columns()
+    
     async with db.pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT s.user_id, s.expires_at, s.auto_pay_method_id
+            SELECT s.user_id, s.expires_at, s.auto_pay_method_id,
+                   COALESCE(s.plan_amount, 199) as plan_amount,
+                   COALESCE(s.plan_days, 30) as plan_days
             FROM subscriptions s
             WHERE s.plan = 'pro'
               AND s.auto_pay_method_id IS NOT NULL
