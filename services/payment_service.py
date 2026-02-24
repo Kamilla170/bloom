@@ -74,6 +74,7 @@ async def create_payment(user_id: int, amount: int = None, days: int = 30,
             "user_id": str(user_id),
             "type": "subscription",
             "days": str(days),
+            "amount": str(amount),
             "plan_label": plan_label,
         },
         "save_payment_method": save_method,
@@ -115,28 +116,38 @@ async def create_payment(user_id: int, amount: int = None, days: int = 30,
         return None
 
 
-async def create_recurring_payment(user_id: int, payment_method_id: str) -> Optional[Dict]:
+async def create_recurring_payment(user_id: int, payment_method_id: str,
+                                   amount: int = None, days: int = 30) -> Optional[Dict]:
     """
     Создать рекуррентный (автоматический) платёж.
-    Автопродление только для месячного тарифа.
+    
+    Args:
+        user_id: ID пользователя
+        payment_method_id: сохранённый метод оплаты
+        amount: сумма списания
+        days: количество дней продления
     """
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
         return None
+    
+    if amount is None:
+        amount = PRO_PRICE
     
     idempotency_key = str(uuid.uuid4())
     
     payload = {
         "amount": {
-            "value": f"{PRO_PRICE}.00",
+            "value": f"{amount}.00",
             "currency": "RUB"
         },
         "capture": True,
         "payment_method_id": payment_method_id,
-        "description": f"Bloom AI — автопродление (пользователь {user_id})",
+        "description": f"Bloom AI — автопродление {days}д (пользователь {user_id})",
         "metadata": {
             "user_id": str(user_id),
             "type": "recurring",
-            "days": "30",
+            "days": str(days),
+            "amount": str(amount),
         }
     }
     
@@ -151,7 +162,7 @@ async def create_recurring_payment(user_id: int, payment_method_id: str) -> Opti
                 data = await resp.json()
                 
                 if resp.status == 200:
-                    logger.info(f"✅ Рекуррентный платёж создан: {data['id']} для user_id={user_id}")
+                    logger.info(f"✅ Рекуррентный платёж создан: {data['id']} для user_id={user_id}, {amount}₽/{days}д")
                     
                     from database import get_db
                     db = await get_db()
@@ -159,7 +170,7 @@ async def create_recurring_payment(user_id: int, payment_method_id: str) -> Opti
                         await conn.execute("""
                             INSERT INTO payments (payment_id, user_id, amount, currency, status, description, is_recurring, created_at)
                             VALUES ($1, $2, $3, 'RUB', $4, $5, TRUE, CURRENT_TIMESTAMP)
-                        """, data['id'], user_id, PRO_PRICE, data['status'], payload['description'])
+                        """, data['id'], user_id, amount, data['status'], payload['description'])
                     
                     return {
                         'payment_id': data['id'],
@@ -192,8 +203,9 @@ async def handle_payment_webhook(payload: dict) -> bool:
         
         user_id = int(user_id)
         days = int(metadata.get('days', 30))
+        amount = int(metadata.get('amount', PRO_PRICE))
         
-        logger.info(f"💳 Webhook: event={event_type}, payment_id={payment_id}, status={status}, user_id={user_id}, days={days}")
+        logger.info(f"💳 Webhook: event={event_type}, payment_id={payment_id}, status={status}, user_id={user_id}, {amount}₽/{days}д")
         
         from database import get_db
         db = await get_db()
@@ -226,6 +238,7 @@ async def handle_payment_webhook(payload: dict) -> bool:
             expires_at = await activate_pro(
                 user_id, 
                 days=days,
+                amount=amount,
                 payment_method_id=payment_method_id
             )
             
@@ -274,14 +287,16 @@ async def process_auto_payments():
     for sub in expiring:
         user_id = sub['user_id']
         method_id = sub['auto_pay_method_id']
+        amount = sub.get('plan_amount', PRO_PRICE)
+        days = sub.get('plan_days', 30)
         
         if not method_id:
             continue
         
-        result = await create_recurring_payment(user_id, method_id)
+        result = await create_recurring_payment(user_id, method_id, amount=amount, days=days)
         
         if result:
-            logger.info(f"✅ Автоплатёж создан для user_id={user_id}: {result['payment_id']}")
+            logger.info(f"✅ Автоплатёж создан для user_id={user_id}: {result['payment_id']}, {amount}₽/{days}д")
         else:
             logger.error(f"❌ Не удалось создать автоплатёж для user_id={user_id}")
             await _notify_user_payment_failed(user_id, "auto_payment_creation_failed")
