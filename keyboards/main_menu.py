@@ -8,8 +8,8 @@ def main_menu():
             InlineKeyboardButton(text="📸 Анализ растения", callback_data="analyze")
         ],
         [
-            InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="question"),
-            InlineKeyboardButton(text="⭐ Подписка", callback_data="show_subscription")
+            InlineKeyboardButton(text="⭐ Подписка", callback_data="show_subscription"),
+            InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="question")
         ],
         [
             InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
