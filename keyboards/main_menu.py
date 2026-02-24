@@ -12,8 +12,8 @@ def main_menu():
             InlineKeyboardButton(text="🤖 Спросить ИИ", callback_data="question")
         ],
         [
-            InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-            InlineKeyboardButton(text="🌿 Мои растения", callback_data="my_plants")
+            InlineKeyboardButton(text="🌿 Мои растения", callback_data="my_plants"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="stats")
         ],
         [
             InlineKeyboardButton(text="📝 Обратная связь", callback_data="feedback"),
