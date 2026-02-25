@@ -595,6 +595,10 @@ async def finish_save_plant(message_or_callback, user_id: int, last_watered: dat
         if result["success"]:
             del temp_analyses[user_id]
             
+            # Отменяем триггерные цепочки, связанные с добавлением растения
+            from services.trigger_service import cancel_chains_by_event
+            await cancel_chains_by_event(user_id, 'plant_added')
+            
             # Формируем сообщение об успехе
             success_text = f"✅ <b>Растение добавлено!</b>\n\n"
             success_text += f"🌱 <b>{result['plant_name']}</b> в вашей коллекции\n"
