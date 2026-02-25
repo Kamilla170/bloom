@@ -27,6 +27,7 @@ from services.seasonal_adjustment_service import (
 )
 from services.payment_service import process_auto_payments, handle_payment_webhook
 from services.subscription_service import reset_all_usage_limits
+from services.trigger_service import check_and_send_triggers
 
 # Импорты handlers
 from handlers import (
@@ -224,6 +225,17 @@ def setup_scheduler():
     )
     logger.info(f"✅ Задача 'reset_usage_limits' добавлена: 1 числа каждого месяца в 00:05 МСК")
     
+    # 📨 ТРИГГЕРНЫЕ ЦЕПОЧКИ — каждые 15 минут
+    scheduler.add_job(
+        check_and_send_triggers,
+        'interval',
+        minutes=15,
+        args=[bot],
+        id='trigger_chains',
+        replace_existing=True
+    )
+    logger.info(f"✅ Задача 'trigger_chains' добавлена: каждые 15 минут")
+    
     # КРИТИЧЕСКИ ВАЖНО: Запускаем планировщик
     scheduler.start()
     logger.info("")
@@ -304,7 +316,7 @@ async def health_check(request):
     return web.json_response({
         "status": "healthy", 
         "bot": "Bloom AI", 
-        "version": "6.0 - Subscription System",
+        "version": "6.1 - Trigger Chains",
         "time_msk": moscow_now.strftime('%Y-%m-%d %H:%M:%S'),
         "timezone": str(MOSCOW_TZ),
         "scheduler": {
@@ -318,7 +330,7 @@ async def health_check(request):
 async def main():
     """Main функция"""
     try:
-        logger.info("🚀 Запуск Bloom AI v6.0 (Subscription System)...")
+        logger.info("🚀 Запуск Bloom AI v6.1 (Trigger Chains)...")
         
         await on_startup()
         
@@ -337,7 +349,7 @@ async def main():
             
             logger.info("")
             logger.info("=" * 70)
-            logger.info(f"🚀 BLOOM AI v6.0 УСПЕШНО ЗАПУЩЕН")
+            logger.info(f"🚀 BLOOM AI v6.1 УСПЕШНО ЗАПУЩЕН")
             logger.info(f"🌐 Порт: {PORT}")
             logger.info(f"📡 Webhook: {WEBHOOK_URL}/webhook/***")
             logger.info(f"💳 YooKassa webhook: {WEBHOOK_URL}/yookassa/webhook")
@@ -355,7 +367,7 @@ async def main():
             # Polling mode
             logger.info("")
             logger.info("=" * 70)
-            logger.info("🤖 BLOOM AI v6.0 В РЕЖИМЕ POLLING")
+            logger.info("🤖 BLOOM AI v6.1 В РЕЖИМЕ POLLING")
             logger.info("⏳ Ожидание сообщений от пользователей...")
             logger.info("=" * 70)
             
