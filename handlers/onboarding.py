@@ -61,6 +61,11 @@ async def mark_onboarding_completed(user_id: int):
                 user_id
             )
         logger.info(f"✅ Онбординг завершен для пользователя {user_id}")
+
+        # Запускаем триггерную цепочку для тех, кто не добавит растение
+        from services.trigger_service import start_chain
+        await start_chain(user_id, 'onboarding_no_plant')
+
     except Exception as e:
         logger.error(f"Ошибка онбординга: {e}")
 
