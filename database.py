@@ -476,6 +476,26 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_from ON admin_messages(from_user_id, sent_at DESC)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_messages_unread ON admin_messages(to_user_id, read) WHERE read = FALSE")
 
+            # === ТАБЛИЦА ТРИГГЕРНЫХ ЦЕПОЧЕК ===
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS trigger_queue (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    chain_type TEXT NOT NULL,
+                    step INTEGER NOT NULL,
+                    send_at TIMESTAMP NOT NULL,
+                    sent BOOLEAN DEFAULT FALSE,
+                    sent_at TIMESTAMP,
+                    cancelled BOOLEAN DEFAULT FALSE,
+                    cancelled_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+                )
+            """)
+
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_trigger_queue_pending ON trigger_queue(send_at) WHERE sent = FALSE AND cancelled = FALSE")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_trigger_queue_user_chain ON trigger_queue(user_id, chain_type)")
+
             # === КРИТИЧНАЯ МИГРАЦИЯ ДЛЯ УНИКАЛЬНОСТИ НАПОМИНАНИЙ ===
             logger.info("🔔 Применение миграции для уникальности напоминаний...")
             
@@ -757,16 +777,7 @@ class PlantDatabase:
             """, user_id)
     
     async def update_user_activity(self, user_id: int, action: str):
-        """
-        Обновить активность пользователя
-        
-        Доступные действия:
-        - opened_bot: открыл бота
-        - added_plant: добавил растение
-        - watered_plant: полил растение
-        - asked_question: задал вопрос
-        - sent_photo: отправил фото на анализ
-        """
+        """Обновить активность пользователя"""
         async with self.pool.acquire() as conn:
             await conn.execute("""
                 UPDATE users 
@@ -810,7 +821,6 @@ class PlantDatabase:
             except Exception as e:
                 logger.error(f"Ошибка добавления в историю: {e}")
             
-            # Обновляем активность пользователя
             await self.update_user_activity(user_id, 'added_plant')
             
             return plant_id
@@ -1126,7 +1136,6 @@ class PlantDatabase:
                     except Exception as e:
                         logger.error(f"Ошибка добавления в историю: {e}")
             
-            # Обновляем активность пользователя
             await self.update_user_activity(user_id, 'watered_plant')
     
     async def delete_plant(self, user_id: int, plant_id: int):
@@ -1140,16 +1149,14 @@ class PlantDatabase:
     # === МЕТОДЫ ДЛЯ НАПОМИНАНИЙ (УПРОЩЕННЫЕ) ===
     
     async def create_reminder(self, user_id: int, plant_id: int, reminder_type: str, next_date: datetime):
-        """Создать напоминание (базовый метод, использует логику из reminder_service)"""
+        """Создать напоминание"""
         async with self.pool.acquire() as conn:
-            # Деактивируем старые
             await conn.execute("""
                 UPDATE reminders 
                 SET is_active = FALSE 
                 WHERE user_id = $1 AND plant_id = $2 AND reminder_type = $3 AND is_active = TRUE
             """, user_id, plant_id, reminder_type)
             
-            # Создаем новое
             await conn.execute("""
                 INSERT INTO reminders (user_id, plant_id, reminder_type, next_date)
                 VALUES ($1, $2, $3, $4)
@@ -1294,7 +1301,6 @@ class PlantDatabase:
     async def get_user_stats(self, user_id: int) -> Dict:
         """Статистика пользователя"""
         async with self.pool.acquire() as conn:
-            # Статистика по обычным растениям (без фильтра plant_type для совместимости)
             regular_stats = await conn.fetchrow("""
                 SELECT 
                     COUNT(*) as total_plants,
@@ -1357,7 +1363,6 @@ class PlantDatabase:
                 json.dumps(recommendations) if recommendations else None,
                 watering_advice, lighting_advice)
             
-            # Обновляем активность пользователя
             await self.update_user_activity(user_id, 'sent_photo')
             
             return analysis_id
@@ -1386,7 +1391,6 @@ class PlantDatabase:
             """, plant_id, user_id, question, answer,
                 json.dumps(context_used) if context_used else None)
             
-            # Обновляем активность пользователя
             await self.update_user_activity(user_id, 'asked_question')
             
             return qa_id
