@@ -1,6 +1,7 @@
 import logging
 from datetime import timedelta
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.exceptions import TelegramForbiddenError
 
 from database import get_db
 from utils.time_utils import get_moscow_now
@@ -167,8 +168,14 @@ async def check_and_send_triggers(bot):
             sent_count = 0
             skip_count = 0
             error_count = 0
+            blocked_count = 0
+            blocked_users = set()
 
             for msg in pending:
+                # Пропускаем заблокировавших пользователей
+                if msg['user_id'] in blocked_users:
+                    continue
+
                 try:
                     # Проверяем стоп-условие перед отправкой
                     should_send = await check_stop_condition(
@@ -193,6 +200,13 @@ async def check_and_send_triggers(bot):
 
                     sent_count += 1
 
+                except TelegramForbiddenError:
+                    blocked_users.add(msg['user_id'])
+                    blocked_count += 1
+                    # Деактивируем все напоминания и триггеры
+                    from services.reminder_service import deactivate_user_reminders
+                    await deactivate_user_reminders(msg['user_id'])
+
                 except Exception as e:
                     error_count += 1
                     logger.error(
@@ -200,10 +214,11 @@ async def check_and_send_triggers(bot):
                         f"user={msg['user_id']}: {e}"
                     )
 
-            if sent_count > 0 or skip_count > 0 or error_count > 0:
+            if sent_count > 0 or skip_count > 0 or error_count > 0 or blocked_count > 0:
                 logger.info(
                     f"📊 Триггеры: отправлено={sent_count}, "
-                    f"пропущено={skip_count}, ошибок={error_count}"
+                    f"пропущено={skip_count}, заблокировано={blocked_count}, "
+                    f"ошибок={error_count}"
                 )
 
     except Exception as e:
@@ -272,6 +287,7 @@ async def send_trigger_message(bot, msg_row):
         ]]
         reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+    # TelegramForbiddenError пробрасывается наверх
     await bot.send_message(
         chat_id=user_id,
         text=message_text,
