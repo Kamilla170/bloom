@@ -2,7 +2,6 @@ import logging
 from aiogram import Router, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import StateFilter
-from aiogram.types import ReplyKeyboardRemove
 
 from states.user_states import FeedbackStates
 from keyboards.main_menu import main_menu
@@ -20,7 +19,7 @@ async def show_feedback_prompt(message_or_callback):
         "Мы будем очень благодарны за оставленную вами обратную связь. "
         "Напишите сообщение, мы постараемся ответить в течение 24 часов."
     )
-    
+
     if isinstance(message_or_callback, types.CallbackQuery):
         await message_or_callback.message.answer(text, parse_mode="HTML")
     else:
@@ -43,18 +42,18 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
         feedback_photo = None
         if message.photo:
             feedback_photo = message.photo[-1].file_id
-        
+
         if not feedback_text and not feedback_photo:
             await message.reply("📝 Напишите сообщение или приложите фото")
             return
-        
+
         if feedback_text and len(feedback_text) < 5:
             await message.reply("📝 Слишком короткое сообщение (минимум 5 символов)")
             return
-        
+
         user_id = message.from_user.id
         username = message.from_user.username or message.from_user.first_name or f"user_{user_id}"
-        
+
         db = await get_db()
         await db.save_feedback(
             user_id=user_id,
@@ -63,24 +62,16 @@ async def handle_feedback_message(message: types.Message, state: FSMContext):
             message=feedback_text or "Фото без комментария",
             photo_file_id=feedback_photo
         )
-        
+
         await message.answer(
-            "✅ <b>Спасибо за обратную связь!</b>\n\n"
-            "Ваше сообщение отправлено команде Bloom. "
-            "Мы ответим вам в ближайшее время.",
-            parse_mode="HTML",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        
-        # Показываем главное меню
-        await message.answer(
-            "🌱 <b>Главное меню</b>",
+            "✅ <b>Спасибо за отзыв!</b>\n\n"
+            "Ваше сообщение принято и поможет улучшить бота.",
             parse_mode="HTML",
             reply_markup=main_menu()
         )
-        
+
         await state.clear()
-        
+
     except Exception as e:
         logger.error(f"Ошибка обратной связи: {e}")
         await message.reply("❌ Ошибка обработки")
