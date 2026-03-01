@@ -1,10 +1,13 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import ADMIN_USER_IDS, SUBSCRIPTION_PLANS, FREE_LIMITS
+from config import (
+    ADMIN_USER_IDS, SUBSCRIPTION_PLANS, FREE_LIMITS,
+    DISCOUNT_PLANS, DISCOUNT_DURATION_DAYS
+)
 from database import get_db
 from services.subscription_service import (
     get_user_plan, get_usage_stats, activate_pro, revoke_pro, is_pro
@@ -17,7 +20,7 @@ router = Router()
 
 
 def plans_keyboard():
-    """Клавиатура с выбором тарифа"""
+    """Клавиатура с выбором тарифа (обычные цены)"""
     buttons = []
     for plan_id, plan in SUBSCRIPTION_PLANS.items():
         if plan['days'] > 30:
@@ -30,6 +33,49 @@ def plans_keyboard():
         )])
     buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def discount_plans_keyboard():
+    """Клавиатура с выбором тарифа (скидочные цены)"""
+    buttons = []
+    for plan_id, plan in DISCOUNT_PLANS.items():
+        original = plan['original_price']
+        discounted = plan['price']
+        label = plan['label']
+        if plan['days'] > 30:
+            text = f"🔥 {label} — {discounted}₽ (вместо {original}₽)"
+        else:
+            text = f"🔥 {label} — {discounted}₽/мес (вместо {original}₽)"
+        buttons.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"buy_discount_{plan_id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def is_discount_eligible(user_id: int) -> bool:
+    """Проверяет, имеет ли пользователь право на скидку (≤ 3 дней с регистрации)"""
+    try:
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            created_at = await conn.fetchval("""
+                SELECT created_at FROM users WHERE user_id = $1
+            """, user_id)
+            
+            if not created_at:
+                return False
+            
+            # Убираем timezone info если есть, для корректного сравнения
+            now = datetime.utcnow()
+            if created_at.tzinfo:
+                created_at = created_at.replace(tzinfo=None)
+            
+            days_since = (now - created_at).total_seconds() / 86400
+            return days_since <= DISCOUNT_DURATION_DAYS
+    except Exception as e:
+        logger.error(f"Ошибка проверки скидки для {user_id}: {e}")
+        return False
 
 
 def subscription_manage_keyboard(plan_info: dict):
@@ -101,19 +147,38 @@ async def pro_command(message: types.Message):
     else:
         stats = await get_usage_stats(user_id)
         
-        await message.answer(
-            f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
-            f"<b>Использование функций:</b>\n"
-            f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
-            f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
-            f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
-            f"<b>⭐ Выберите тариф:</b>\n"
-            f"• Неограниченное добавление растений\n"
-            f"• Безлимитное количество анализов растений\n"
-            f"• Поддержка 24/7 по всем вопросам о растениях\n",
-            parse_mode="HTML",
-            reply_markup=plans_keyboard()
-        )
+        # Проверяем право на скидку
+        has_discount = await is_discount_eligible(user_id)
+        
+        if has_discount:
+            await message.answer(
+                f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
+                f"<b>Использование функций:</b>\n"
+                f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
+                f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
+                f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
+                f"🔥 <b>У вас есть скидка 33% для новых пользователей!</b>\n\n"
+                f"⭐ Подписка снимает все ограничения:\n"
+                f"• Неограниченное добавление растений\n"
+                f"• Безлимитное количество анализов растений\n"
+                f"• Поддержка 24/7 по всем вопросам о растениях\n",
+                parse_mode="HTML",
+                reply_markup=discount_plans_keyboard()
+            )
+        else:
+            await message.answer(
+                f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
+                f"<b>Использование функций:</b>\n"
+                f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
+                f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
+                f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
+                f"<b>⭐ Выберите тариф:</b>\n"
+                f"• Неограниченное добавление растений\n"
+                f"• Безлимитное количество анализов растений\n"
+                f"• Поддержка 24/7 по всем вопросам о растениях\n",
+                parse_mode="HTML",
+                reply_markup=plans_keyboard()
+            )
 
 
 @router.message(Command("subscription"))
@@ -133,23 +198,154 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
         await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
         return
     
-    await callback.message.answer(
-        "⭐ <b>Выберите тариф подписки:</b>\n\n"
-        "• Неограниченное добавление растений\n"
-        "• Безлимитное количество анализов растений\n"
-        "• Поддержка 24/7 по всем вопросам о растениях\n",
-        parse_mode="HTML",
-        reply_markup=plans_keyboard()
+    # Проверяем право на скидку
+    has_discount = await is_discount_eligible(user_id)
+    
+    if has_discount:
+        await callback.message.answer(
+            "🔥 <b>Скидка 33% для новых пользователей!</b>\n\n"
+            "⭐ Подписка снимает все ограничения:\n"
+            "• Неограниченное добавление растений\n"
+            "• Безлимитное количество анализов растений\n"
+            "• Поддержка 24/7 по всем вопросам о растениях\n",
+            parse_mode="HTML",
+            reply_markup=discount_plans_keyboard()
+        )
+    else:
+        await callback.message.answer(
+            "⭐ <b>Выберите тариф подписки:</b>\n\n"
+            "• Неограниченное добавление растений\n"
+            "• Безлимитное количество анализов растений\n"
+            "• Поддержка 24/7 по всем вопросам о растениях\n",
+            parse_mode="HTML",
+            reply_markup=plans_keyboard()
+        )
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data == "show_discount_plans")
+async def show_discount_plans_callback(callback: types.CallbackQuery):
+    """Показать скидочные тарифы (из триггерных сообщений)"""
+    user_id = callback.from_user.id
+    
+    if await is_pro(user_id):
+        await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
+        return
+    
+    # Проверяем, ещё ли действует скидка
+    has_discount = await is_discount_eligible(user_id)
+    
+    if has_discount:
+        await callback.message.answer(
+            "🔥 <b>Ваша персональная скидка 33%</b>\n\n"
+            "Выберите тариф:\n\n"
+            "• 1 мес — <s>249₽</s> <b>169₽</b>\n"
+            "• 3 мес — <s>599₽</s> <b>399₽</b>\n"
+            "• 6 мес — <s>1099₽</s> <b>739₽</b>\n"
+            "• 12 мес — <s>2099₽</s> <b>1369₽</b>\n\n"
+            "Подписка снимает все ограничения.",
+            parse_mode="HTML",
+            reply_markup=discount_plans_keyboard()
+        )
+    else:
+        await callback.message.answer(
+            "⏰ К сожалению, скидка уже истекла.\n\n"
+            "Но вы можете оформить подписку по обычной цене:",
+            parse_mode="HTML",
+            reply_markup=plans_keyboard()
+        )
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("buy_discount_"))
+async def buy_discount_plan_callback(callback: types.CallbackQuery):
+    """Оформление подписки со скидкой"""
+    user_id = callback.from_user.id
+    plan_id = callback.data.replace("buy_discount_", "")
+    
+    # Проверяем существование плана
+    discount_plan = DISCOUNT_PLANS.get(plan_id)
+    regular_plan = SUBSCRIPTION_PLANS.get(plan_id)
+    if not discount_plan or not regular_plan:
+        await callback.answer("❌ Тариф не найден", show_alert=True)
+        return
+    
+    if await is_pro(user_id):
+        await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
+        return
+    
+    # Проверяем право на скидку
+    has_discount = await is_discount_eligible(user_id)
+    
+    if not has_discount:
+        await callback.message.answer(
+            "⏰ К сожалению, скидка уже истекла.\n\n"
+            "Вы можете оформить подписку по обычной цене:",
+            parse_mode="HTML",
+            reply_markup=plans_keyboard()
+        )
+        await callback.answer()
+        return
+    
+    processing_msg = await callback.message.answer(
+        "💳 <b>Создаю ссылку на оплату...</b>",
+        parse_mode="HTML"
     )
+    
+    # Автопродление только для месячного тарифа
+    save_method = (plan_id == '1month')
+    
+    # Создаём платёж со скидочной ценой
+    result = await create_payment(
+        user_id=user_id,
+        amount=discount_plan['price'],
+        days=discount_plan['days'],
+        plan_label=f"{discount_plan['label']} (скидка 33%)",
+        save_method=save_method
+    )
+    
+    await processing_msg.delete()
+    
+    if result:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Перейти к оплате", url=result['confirmation_url'])],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ])
+        
+        auto_text = "\n🔄 Автопродление: включено (по обычной цене)" if save_method else ""
+        
+        await callback.message.answer(
+            f"💳 <b>Оплата подписки со скидкой</b>\n\n"
+            f"⭐ Тариф: <b>{discount_plan['label']}</b>\n"
+            f"💰 Сумма: <s>{discount_plan['original_price']}₽</s> <b>{discount_plan['price']}₽</b>\n"
+            f"📅 Период: <b>{discount_plan['days']} дней</b>"
+            f"{auto_text}\n\n"
+            f"Нажмите кнопку ниже для перехода к оплате.\n"
+            f"После оплаты подписка активируется автоматически.",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    else:
+        await callback.message.answer(
+            "❌ <b>Не удалось создать платёж</b>\n\n"
+            "Платёжная система временно недоступна. Попробуйте позже.",
+            parse_mode="HTML"
+        )
     
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("buy_"))
 async def buy_plan_callback(callback: types.CallbackQuery):
-    """Оформление подписки — создание платежа для выбранного тарифа"""
+    """Оформление подписки — создание платежа для выбранного тарифа (обычная цена)"""
     user_id = callback.from_user.id
     plan_id = callback.data.replace("buy_", "")
+    
+    # Пропускаем если это discount_ (обрабатывается выше)
+    if plan_id.startswith("discount_"):
+        return
     
     plan = SUBSCRIPTION_PLANS.get(plan_id)
     if not plan:
@@ -271,19 +467,38 @@ async def show_subscription_callback(callback: types.CallbackQuery):
     else:
         stats = await get_usage_stats(user_id)
         
-        await callback.message.answer(
-            f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
-            f"<b>Использование функций:</b>\n"
-            f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
-            f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
-            f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
-            f"<b>⭐ Выберите тариф:</b>\n"
-            f"• Неограниченное добавление растений\n"
-            f"• Безлимитное количество анализов растений\n"
-            f"• Поддержка 24/7 по всем вопросам о растениях\n",
-            parse_mode="HTML",
-            reply_markup=plans_keyboard()
-        )
+        # Проверяем право на скидку
+        has_discount = await is_discount_eligible(user_id)
+        
+        if has_discount:
+            await callback.message.answer(
+                f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
+                f"<b>Использование функций:</b>\n"
+                f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
+                f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
+                f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
+                f"🔥 <b>У вас есть скидка 33% для новых пользователей!</b>\n\n"
+                f"⭐ Подписка снимает все ограничения:\n"
+                f"• Неограниченное добавление растений\n"
+                f"• Безлимитное количество анализов растений\n"
+                f"• Поддержка 24/7 по всем вопросам о растениях\n",
+                parse_mode="HTML",
+                reply_markup=discount_plans_keyboard()
+            )
+        else:
+            await callback.message.answer(
+                f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
+                f"<b>Использование функций:</b>\n"
+                f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
+                f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
+                f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
+                f"<b>⭐ Выберите тариф:</b>\n"
+                f"• Неограниченное добавление растений\n"
+                f"• Безлимитное количество анализов растений\n"
+                f"• Поддержка 24/7 по всем вопросам о растениях\n",
+                parse_mode="HTML",
+                reply_markup=plans_keyboard()
+            )
     
     await callback.answer()
 
