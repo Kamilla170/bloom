@@ -35,36 +35,67 @@ FREE_LIMITS = {
     'questions': 1,     # вопросов в месяц
 }
 
-# Тарифные планы подписки
+# Тарифные планы подписки (обычные цены)
 SUBSCRIPTION_PLANS = {
     '1month': {
         'label': '1 месяц',
-        'price': 199,
+        'price': 249,
         'days': 30,
-        'per_month': 199,
+        'per_month': 249,
     },
     '3months': {
         'label': '3 месяца',
-        'price': 549,
+        'price': 599,
         'days': 90,
-        'per_month': 183,
+        'per_month': 200,
     },
     '6months': {
         'label': '6 месяцев',
-        'price': 1049,
+        'price': 1099,
         'days': 180,
-        'per_month': 174,
+        'per_month': 183,
     },
     '12months': {
         'label': '12 месяцев',
-        'price': 1999,
+        'price': 2099,
         'days': 365,
-        'per_month': 166,
+        'per_month': 175,
     },
 }
 
+# Скидочные цены для новых пользователей (33%)
+DISCOUNT_PLANS = {
+    '1month': {
+        'label': '1 месяц',
+        'price': 169,
+        'days': 30,
+        'original_price': 249,
+    },
+    '3months': {
+        'label': '3 месяца',
+        'price': 399,
+        'days': 90,
+        'original_price': 599,
+    },
+    '6months': {
+        'label': '6 месяцев',
+        'price': 739,
+        'days': 180,
+        'original_price': 1099,
+    },
+    '12months': {
+        'label': '12 месяцев',
+        'price': 1369,
+        'days': 365,
+        'original_price': 2099,
+    },
+}
+
+# Срок действия скидки для новых пользователей (дни с момента регистрации)
+DISCOUNT_DURATION_DAYS = 3
+
 # Для обратной совместимости
-PRO_PRICE = 199  # цена базового плана
+PRO_PRICE = 249  # цена базового плана
 PRO_DURATION_DAYS = 30
 PRO_GRACE_PERIOD_DAYS = 3  # дней после неудачного автоплатежа
 
