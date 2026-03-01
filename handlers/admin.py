@@ -18,6 +18,103 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_USER_IDS
 
 
+@router.message(Command("delete_user"))
+async def delete_user_command(message: types.Message):
+    """
+    Удаление пользователя из БД
+    Формат: /delete_user {user_id}
+    """
+    if not is_admin(message.from_user.id):
+        await message.reply("❌ У вас нет прав администратора")
+        return
+    
+    try:
+        parts = message.text.split()
+        
+        if len(parts) < 2:
+            await message.reply(
+                "📝 <b>Формат команды:</b>\n"
+                "/delete_user {user_id}\n\n"
+                "<b>Пример:</b>\n"
+                "/delete_user 123456789",
+                parse_mode="HTML"
+            )
+            return
+        
+        target_user_id = int(parts[1])
+        
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            # Проверяем существование
+            user = await conn.fetchrow(
+                "SELECT user_id, username, first_name, plants_count FROM users WHERE user_id = $1",
+                target_user_id
+            )
+            
+            if not user:
+                await message.reply(f"❌ Пользователь {target_user_id} не найден в БД")
+                return
+            
+            username = user['username'] or user['first_name'] or f"user_{target_user_id}"
+            
+            # Удаляем из всех таблиц в правильном порядке
+            deleted = {}
+            
+            deleted['trigger_queue'] = await conn.execute(
+                "DELETE FROM trigger_queue WHERE user_id = $1", target_user_id
+            )
+            deleted['reminders'] = await conn.execute(
+                "DELETE FROM reminders WHERE user_id = $1", target_user_id
+            )
+            deleted['care_history'] = await conn.execute(
+                "DELETE FROM care_history WHERE user_id = $1", target_user_id
+            )
+            deleted['plant_qa_history'] = await conn.execute(
+                "DELETE FROM plant_qa_history WHERE user_id = $1", target_user_id
+            )
+            deleted['plant_state_history'] = await conn.execute(
+                "DELETE FROM plant_state_history WHERE plant_id IN (SELECT id FROM plants WHERE user_id = $1)",
+                target_user_id
+            )
+            deleted['plants'] = await conn.execute(
+                "DELETE FROM plants WHERE user_id = $1", target_user_id
+            )
+            deleted['growing_plants'] = await conn.execute(
+                "DELETE FROM growing_plants WHERE user_id = $1", target_user_id
+            )
+            deleted['user_settings'] = await conn.execute(
+                "DELETE FROM user_settings WHERE user_id = $1", target_user_id
+            )
+            deleted['subscriptions'] = await conn.execute(
+                "DELETE FROM subscriptions WHERE user_id = $1", target_user_id
+            )
+            deleted['payments'] = await conn.execute(
+                "DELETE FROM payments WHERE user_id = $1", target_user_id
+            )
+            deleted['admin_messages'] = await conn.execute(
+                "DELETE FROM admin_messages WHERE from_user_id = $1 OR to_user_id = $1", target_user_id
+            )
+            deleted['users'] = await conn.execute(
+                "DELETE FROM users WHERE user_id = $1", target_user_id
+            )
+        
+        logger.info(f"🗑️ Админ {message.from_user.id} удалил пользователя {target_user_id} ({username})")
+        
+        await message.reply(
+            f"✅ <b>Пользователь удалён</b>\n\n"
+            f"👤 {username} (ID: <code>{target_user_id}</code>)\n"
+            f"🌱 Растений было: {user['plants_count'] or 0}\n\n"
+            f"Все данные удалены из БД.",
+            parse_mode="HTML"
+        )
+        
+    except ValueError:
+        await message.reply("❌ Неверный формат user_id. Должно быть число.")
+    except Exception as e:
+        logger.error(f"Ошибка удаления пользователя: {e}", exc_info=True)
+        await message.reply(f"❌ Ошибка: {str(e)}")
+
+
 @router.message(Command("send"))
 async def send_message_to_user_command(message: types.Message, state: FSMContext):
     """
