@@ -622,21 +622,22 @@ async def finish_save_plant(message_or_callback, user_id: int, last_watered: dat
             else:
                 await message_or_callback.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
             
-            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого сохранения ===
-            from handlers.onboarding import send_tip_if_needed, TIP_AFTER_SAVE
-            
-            async def _send_save_tip():
-                if isinstance(message_or_callback, types.Message):
-                    await message_or_callback.answer(TIP_AFTER_SAVE)
-                else:
-                    await message_or_callback.answer(TIP_AFTER_SAVE)
-            
-            await send_tip_if_needed(user_id, 'save', _send_save_tip)
-            
-            # === СКИДКА ДЛЯ НОВЫХ ПОЛЬЗОВАТЕЛЕЙ: первое растение ===
+            # === ОНБОРДИНГ ПОСЛЕ ПЕРВОГО РАСТЕНИЯ ===
             if plants_before == 0:
-                await _send_first_plant_discount(message_or_callback, user_id)
-                await start_chain(user_id, 'new_user_discount')
+                # Первое растение: подсказка "Спросить ИИ" + таймер на скидку
+                await _send_ask_ai_tip(message_or_callback, user_id)
+                await start_chain(user_id, 'first_plant_discount')
+            else:
+                # Последующие растения: стандартная подсказка
+                from handlers.onboarding import send_tip_if_needed, TIP_AFTER_SAVE
+                
+                async def _send_save_tip():
+                    if isinstance(message_or_callback, types.Message):
+                        await message_or_callback.answer(TIP_AFTER_SAVE)
+                    else:
+                        await message_or_callback.answer(TIP_AFTER_SAVE)
+                
+                await send_tip_if_needed(user_id, 'save', _send_save_tip)
             
         else:
             error_msg = f"❌ {result['error']}"
@@ -657,41 +658,32 @@ async def finish_save_plant(message_or_callback, user_id: int, last_watered: dat
         await state.clear()
 
 
-async def _send_first_plant_discount(message_or_callback, user_id: int):
-    """Отправляет первое сообщение о скидке сразу после добавления первого растения"""
+async def _send_ask_ai_tip(message_or_callback, user_id: int):
+    """Подсказка задать вопрос ИИ после добавления первого растения"""
     try:
-        # Проверяем, нет ли уже подписки
         from services.subscription_service import is_pro
         if await is_pro(user_id):
             return
         
-        discount_text = (
-            "🎉 <b>Отлично, первое растение добавлено!</b>\n\n"
-            "Сейчас вам доступен бесплатный план — "
-            "1 анализ растения и 1 вопрос в месяц.\n\n"
-            "Только для новых пользователей — <b>скидка 33%</b> "
-            "на подписку в течение первых трёх дней:\n\n"
-            "• 1 мес — <s>249₽</s> <b>169₽</b>\n"
-            "• 3 мес — <s>599₽</s> <b>399₽</b>\n"
-            "• 6 мес — <s>1099₽</s> <b>739₽</b>\n"
-            "• 12 мес — <s>2099₽</s> <b>1369₽</b>\n\n"
-            "Подписка снимает все ограничения: безлимитные "
-            "анализы, вопросы и добавление растений."
+        tip_text = (
+            "💡 <b>Кстати!</b>\n\n"
+            "Вы можете задать мне любой вопрос о вашем растении:\n\n"
+            "— Почему желтеют листья?\n"
+            "— Когда лучше пересаживать?\n"
+            "— Какой горшок подойдёт?\n\n"
+            "Я помню всё о вашем растении и дам персональный ответ."
         )
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="⭐ Выбрать тариф со скидкой",
-                callback_data="show_discount_plans"
-            )]
+            [InlineKeyboardButton(text="❓ Спросить ИИ", callback_data="question")]
         ])
         
         if isinstance(message_or_callback, types.Message):
-            await message_or_callback.answer(discount_text, parse_mode="HTML", reply_markup=keyboard)
+            await message_or_callback.answer(tip_text, parse_mode="HTML", reply_markup=keyboard)
         else:
-            await message_or_callback.answer(discount_text, parse_mode="HTML", reply_markup=keyboard)
+            await message_or_callback.answer(tip_text, parse_mode="HTML", reply_markup=keyboard)
         
-        logger.info(f"💰 Скидочное сообщение отправлено user_id={user_id}")
+        logger.info(f"💡 Подсказка 'Спросить ИИ' отправлена user_id={user_id}")
         
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки скидки для {user_id}: {e}")
+        logger.error(f"❌ Ошибка отправки подсказки ИИ для {user_id}: {e}")
