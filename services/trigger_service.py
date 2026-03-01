@@ -57,11 +57,36 @@ TRIGGER_CHAINS = {
         'cancel_on': 'plant_added',
     },
 
-    'new_user_discount': {
-        'description': 'Скидка 33% для новых пользователей после добавления первого растения',
+    'first_plant_discount': {
+        'description': 'Скидка через 15 мин после первого растения (если не задал вопрос)',
         'steps': [
             {
-                # Шаг 1 (через 24ч после добавления первого растения)
+                'delay_hours': 0.25,  # 15 минут
+                'message': (
+                    "🌿 <b>Это только начало!</b>\n\n"
+                    "Вы добавили растение — отличный старт! "
+                    "А ещё мне можно задавать вопросы об уходе.\n\n"
+                    "Сейчас вам доступен бесплатный план — "
+                    "1 анализ и 1 вопрос в месяц.\n\n"
+                    "Для новых пользователей — <b>скидка 33%</b> в первые 3 дня:\n\n"
+                    "• 1 мес — <s>249₽</s> <b>169₽</b>\n"
+                    "• 3 мес — <s>599₽</s> <b>399₽</b>\n"
+                    "• 6 мес — <s>1099₽</s> <b>739₽</b>\n"
+                    "• 12 мес — <s>2099₽</s> <b>1369₽</b>"
+                ),
+                'button_text': '⭐ Выбрать тариф со скидкой',
+                'button_callback': 'show_discount_plans',
+            },
+        ],
+        'cancel_on': 'payment_made',
+        'next_chain': 'new_user_discount',
+    },
+
+    'new_user_discount': {
+        'description': 'Follow-up скидки: напоминания через 24ч и 60ч',
+        'steps': [
+            {
+                # Шаг 1 (через 24ч после первого сообщения о скидке)
                 'delay_hours': 24,
                 'message': (
                     "⏰ Ваша персональная скидка 33% ещё действует!\n\n"
@@ -231,6 +256,18 @@ async def check_and_send_triggers(bot):
                     """, moscow_now_naive, msg['id'])
 
                     sent_count += 1
+
+                    # Проверяем, нужно ли запустить следующую цепочку
+                    chain_config = TRIGGER_CHAINS.get(msg['chain_type'], {})
+                    total_steps = len(chain_config.get('steps', []))
+                    next_chain = chain_config.get('next_chain')
+
+                    if msg['step'] == total_steps and next_chain:
+                        await start_chain(msg['user_id'], next_chain)
+                        logger.info(
+                            f"🔗 Запущена следующая цепочка '{next_chain}' "
+                            f"для user_id={msg['user_id']}"
+                        )
 
                 except TelegramForbiddenError:
                     blocked_users.add(msg['user_id'])
