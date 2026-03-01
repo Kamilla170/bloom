@@ -207,14 +207,6 @@ async def handle_photo(message: types.Message, bot):
                 reply_markup=keyboard
             )
             
-            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого анализа ===
-            from handlers.onboarding import send_tip_if_needed, TIP_AFTER_ANALYSIS
-            
-            async def _send_analysis_tip():
-                await message.answer(TIP_AFTER_ANALYSIS)
-            
-            await send_tip_if_needed(user_id, 'analysis', _send_analysis_tip)
-            
         else:
             from keyboards.main_menu import simple_back_menu
             await message.reply("❌ Ошибка анализа", reply_markup=simple_back_menu())
