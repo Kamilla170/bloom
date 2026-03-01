@@ -287,12 +287,15 @@ async def handle_question(message: types.Message, state: FSMContext):
                 # Ошибка парсинга HTML - отправляем без форматирования
                 logger.warning(f"⚠️ Ошибка HTML разметки, отправляю без форматирования: {parse_error}")
                 # Убираем HTML теги для безопасной отправки
-                import re
                 clean_text = re.sub(r'<[^>]+>', '', response_text)
                 await message.reply(
                     clean_text,
                     reply_markup=question_continue_keyboard()
                 )
+            
+            # === СКИДКА ДЛЯ НОВЫХ ПОЛЬЗОВАТЕЛЕЙ после первого ответа ИИ ===
+            await _maybe_send_first_discount(user_id, message)
+            
         else:
             await message.reply(
                 "🤔 Не удалось сформировать ответ. Попробуйте переформулировать вопрос.",
@@ -307,3 +310,58 @@ async def handle_question(message: types.Message, state: FSMContext):
             "❌ Произошла ошибка. Попробуйте ещё раз или завершите диалог.",
             reply_markup=question_continue_keyboard()
         )
+
+
+async def _maybe_send_first_discount(user_id: int, message: types.Message):
+    """Отправляет скидку новому пользователю после первого ответа ИИ"""
+    try:
+        from services.subscription_service import is_pro
+        if await is_pro(user_id):
+            return
+        
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            # Проверяем, есть ли ожидающий триггер first_plant_discount
+            pending = await conn.fetchval("""
+                SELECT COUNT(*) FROM trigger_queue
+                WHERE user_id = $1 AND chain_type = 'first_plant_discount'
+                AND sent = FALSE AND cancelled = FALSE
+            """, user_id)
+        
+        if pending == 0:
+            return
+        
+        # Отменяем таймерный триггер — скидку отправим сами
+        from services.trigger_service import cancel_chain, start_chain
+        await cancel_chain(user_id, 'first_plant_discount')
+        
+        # Отправляем скидку
+        discount_text = (
+            "⭐ <b>Разблокируйте полный доступ</b>\n\n"
+            "На бесплатном плане доступен 1 анализ и 1 вопрос в месяц.\n\n"
+            "Только для новых пользователей — <b>скидка 33%</b> "
+            "на подписку в первые 3 дня:\n\n"
+            "• 1 мес — <s>249₽</s> <b>169₽</b>\n"
+            "• 3 мес — <s>599₽</s> <b>399₽</b>\n"
+            "• 6 мес — <s>1099₽</s> <b>739₽</b>\n"
+            "• 12 мес — <s>2099₽</s> <b>1369₽</b>\n\n"
+            "Подписка снимает все ограничения: безлимитные "
+            "анализы, вопросы и растения."
+        )
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="⭐ Выбрать тариф со скидкой",
+                callback_data="show_discount_plans"
+            )]
+        ])
+        
+        await message.answer(discount_text, parse_mode="HTML", reply_markup=keyboard)
+        
+        # Запускаем follow-up цепочку (24ч и 60ч напоминания)
+        await start_chain(user_id, 'new_user_discount')
+        
+        logger.info(f"💰 Скидка после вопроса ИИ отправлена user_id={user_id}")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки скидки после вопроса для {user_id}: {e}")
