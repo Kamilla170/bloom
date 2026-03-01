@@ -56,6 +56,38 @@ TRIGGER_CHAINS = {
         ],
         'cancel_on': 'plant_added',
     },
+
+    'new_user_discount': {
+        'description': 'Скидка 33% для новых пользователей после добавления первого растения',
+        'steps': [
+            {
+                # Шаг 1 (через 24ч после добавления первого растения)
+                'delay_hours': 24,
+                'message': (
+                    "⏰ Ваша персональная скидка 33% ещё действует!\n\n"
+                    "С подпиской вы сможете:\n"
+                    "🔍 Анализировать растения без ограничений\n"
+                    "🤖 Задавать любые вопросы об уходе\n"
+                    "🌿 Добавлять неограниченное количество растений"
+                ),
+                'button_text': '⭐ Оформить со скидкой',
+                'button_callback': 'show_discount_plans',
+            },
+            {
+                # Шаг 2 (через 60ч — за 12 часов до сгорания скидки)
+                'delay_hours': 60,
+                'message': (
+                    "🔥 Скидка 33% сгорает через 12 часов!\n\n"
+                    "Это последний шанс оформить подписку по сниженной цене:\n"
+                    "• 1 мес — 169₽ вместо 249₽\n"
+                    "• 12 мес — 1369₽ вместо 2099₽"
+                ),
+                'button_text': '⭐ Оформить со скидкой',
+                'button_callback': 'show_discount_plans',
+            },
+        ],
+        'cancel_on': 'payment_made',
+    },
 }
 
 
@@ -248,11 +280,14 @@ async def check_stop_condition(user_id: int, chain_type: str) -> bool:
             """, user_id)
             return plants_count == 0
 
-        # Сюда добавлять другие стоп-условия:
-        # elif cancel_on == 'payment_made':
-        #     ...
-        # elif cancel_on == 'watered_plant':
-        #     ...
+        elif cancel_on == 'payment_made':
+            # Проверяем, есть ли активная подписка
+            has_sub = await conn.fetchval("""
+                SELECT COUNT(*) FROM subscriptions
+                WHERE user_id = $1 AND plan = 'pro'
+                AND expires_at > CURRENT_TIMESTAMP
+            """, user_id)
+            return has_sub == 0
 
     return True
 
@@ -291,6 +326,7 @@ async def send_trigger_message(bot, msg_row):
     await bot.send_message(
         chat_id=user_id,
         text=message_text,
+        parse_mode="HTML",
         reply_markup=reply_markup
     )
 
