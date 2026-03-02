@@ -638,3 +638,40 @@ async def debug_reminders_command(message: types.Message):
         await message.reply(text, parse_mode="HTML")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
+
+
+@router.message(Command("fix_reminders"))
+async def fix_reminders_command(message: types.Message):
+    """Исправить просроченные напоминания"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    try:
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            # Сбрасываем next_date на сегодня для растений,
+            # которые не поливались дольше своего интервала
+            result = await conn.execute("""
+                UPDATE reminders r
+                SET next_date = CURRENT_DATE,
+                    last_sent = NULL
+                FROM plants p
+                WHERE r.plant_id = p.id
+                  AND r.reminder_type = 'watering'
+                  AND r.is_active = TRUE
+                  AND p.plant_type = 'regular'
+                  AND (
+                    p.last_watered IS NULL 
+                    OR p.last_watered::date + p.watering_interval <= CURRENT_DATE
+                  )
+            """)
+            
+            count = int(result.split()[-1])
+        
+        await message.reply(
+            f"✅ <b>Исправлено {count} напоминаний</b>\n\n"
+            f"Завтра в 09:00 МСК они будут отправлены.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.reply(f"❌ Ошибка: {e}")
