@@ -335,6 +335,10 @@ async def _maybe_send_first_discount(user_id: int, message: types.Message):
         from services.trigger_service import cancel_chain, start_chain
         await cancel_chain(user_id, 'first_plant_discount')
         
+        # Задержка, чтобы пользователь успел прочитать ответ ИИ
+        import asyncio
+        await asyncio.sleep(3)
+        
         # Отправляем скидку
         discount_text = (
             "⭐ <b>Разблокируйте полный доступ</b>\n\n"
