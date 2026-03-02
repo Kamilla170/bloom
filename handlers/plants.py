@@ -661,9 +661,12 @@ async def finish_save_plant(message_or_callback, user_id: int, last_watered: dat
 async def _send_ask_ai_tip(message_or_callback, user_id: int):
     """Подсказка задать вопрос ИИ после добавления первого растения"""
     try:
+        import asyncio
         from services.subscription_service import is_pro
         if await is_pro(user_id):
             return
+        
+        await asyncio.sleep(3)
         
         tip_text = (
             "💡 <b>Кстати!</b>\n\n"
