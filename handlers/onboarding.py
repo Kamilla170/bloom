@@ -112,7 +112,9 @@ async def send_tip_if_needed(user_id: int, tip_type: str, send_func) -> bool:
                 user_id
             )
 
-        # Отправляем подсказку
+        # Отправляем подсказку с задержкой, чтобы пользователь успел прочитать
+        import asyncio
+        await asyncio.sleep(3)
         await send_func()
         logger.info(f"💡 Подсказка '{tip_type}' отправлена пользователю {user_id}")
         return True
