@@ -146,7 +146,7 @@ async def check_plant_command(message: types.Message):
             plant = await conn.fetchrow("""
                 SELECT p.id, p.user_id, p.plant_name, p.custom_name,
                        p.plant_type, p.current_state, p.reminder_enabled,
-                       p.watering_interval, p.last_watered, p.created_at,
+                       p.watering_interval, p.last_watered, p.saved_date,
                        COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as display_name
                 FROM plants p
                 WHERE p.id = $1
@@ -201,7 +201,7 @@ async def check_plant_command(message: types.Message):
         else:
             text += f"   Последний полив: никогда ❗\n"
         
-        text += f"   Создано: {plant['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
+        text += f"   Создано: {plant['saved_date'].strftime('%d.%m.%Y %H:%M')}\n"
         
         # Настройки пользователя
         text += f"\n<b>👤 User settings:</b>\n"
