@@ -593,3 +593,48 @@ async def list_users_command(message: types.Message):
     except Exception as e:
         logger.error(f"Ошибка списка пользователей: {e}", exc_info=True)
         await message.reply("❌ Ошибка загрузки")
+
+
+@router.message(Command("debug_reminders"))
+async def debug_reminders_command(message: types.Message):
+    """Диагностика напоминаний"""
+    if not is_admin(message.from_user.id):
+        return
+    
+    try:
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT p.id, 
+                       COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as name,
+                       p.watering_interval,
+                       p.last_watered::date,
+                       r.next_date::date,
+                       r.last_sent::date,
+                       (r.next_date::date <= CURRENT_DATE) as should_fire
+                FROM plants p
+                JOIN reminders r ON r.plant_id = p.id 
+                    AND r.reminder_type = 'watering' 
+                    AND r.is_active = TRUE
+                WHERE p.plant_type = 'regular'
+                ORDER BY r.next_date ASC
+                LIMIT 20
+            """)
+        
+        text = "🔍 <b>Диагностика напоминаний:</b>\n\n"
+        for r in rows:
+            fire = "🔥" if r['should_fire'] else "⏳"
+            text += (
+                f"{fire} <b>{r['name']}</b> (ID={r['id']})\n"
+                f"   Интервал: {r['watering_interval']}д, "
+                f"Полив: {r['last_watered'] or 'никогда'}\n"
+                f"   Next: {r['next_date']}, "
+                f"LastSent: {r['last_sent'] or 'никогда'}\n\n"
+            )
+        
+        if not rows:
+            text += "❌ Нет активных напоминаний"
+        
+        await message.reply(text, parse_mode="HTML")
+    except Exception as e:
+        await message.reply(f"❌ Ошибка: {e}")
