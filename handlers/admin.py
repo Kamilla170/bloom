@@ -115,6 +115,132 @@ async def delete_user_command(message: types.Message):
         await message.reply(f"❌ Ошибка: {str(e)}")
 
 
+@router.message(Command("check_plant"))
+async def check_plant_command(message: types.Message):
+    """
+    Диагностика растения и напоминаний
+    Формат: /check_plant {plant_id}
+    """
+    if not is_admin(message.from_user.id):
+        await message.reply("❌ У вас нет прав администратора")
+        return
+    
+    try:
+        parts = message.text.split()
+        
+        if len(parts) < 2:
+            await message.reply(
+                "📝 <b>Формат команды:</b>\n"
+                "/check_plant {plant_id}\n\n"
+                "<b>Пример:</b>\n"
+                "/check_plant 9",
+                parse_mode="HTML"
+            )
+            return
+        
+        plant_id = int(parts[1])
+        
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            # Данные растения
+            plant = await conn.fetchrow("""
+                SELECT p.id, p.user_id, p.plant_name, p.custom_name,
+                       p.plant_type, p.current_state, p.reminder_enabled,
+                       p.watering_interval, p.last_watered, p.created_at,
+                       COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as display_name
+                FROM plants p
+                WHERE p.id = $1
+            """, plant_id)
+            
+            if not plant:
+                await message.reply(f"❌ Растение с ID {plant_id} не найдено")
+                return
+            
+            # Настройки пользователя
+            user_settings = await conn.fetchrow("""
+                SELECT reminder_enabled FROM user_settings
+                WHERE user_id = $1
+            """, plant['user_id'])
+            
+            # Напоминания
+            reminders = await conn.fetch("""
+                SELECT id, reminder_type, next_date, last_sent, 
+                       is_active, send_count
+                FROM reminders
+                WHERE plant_id = $1
+                ORDER BY is_active DESC, next_date DESC
+            """, plant_id)
+            
+            # Триггеры пользователя
+            triggers = await conn.fetch("""
+                SELECT chain_type, step, send_at, sent, cancelled
+                FROM trigger_queue
+                WHERE user_id = $1
+                ORDER BY send_at DESC
+                LIMIT 10
+            """, plant['user_id'])
+        
+        # Формируем отчёт
+        from utils.time_utils import get_moscow_now
+        now = get_moscow_now()
+        
+        text = f"🔍 <b>Диагностика растения #{plant_id}</b>\n\n"
+        
+        # Растение
+        text += f"<b>🌱 Растение:</b>\n"
+        text += f"   Название: {plant['display_name']}\n"
+        text += f"   User ID: <code>{plant['user_id']}</code>\n"
+        text += f"   Тип: {plant['plant_type']}\n"
+        text += f"   Состояние: {plant['current_state']}\n"
+        text += f"   Интервал полива: {plant['watering_interval']} дней\n"
+        text += f"   reminder_enabled: {'✅' if plant['reminder_enabled'] else '❌'}\n"
+        
+        if plant['last_watered']:
+            days_ago = (now.date() - plant['last_watered'].date()).days
+            text += f"   Последний полив: {plant['last_watered'].strftime('%d.%m.%Y')} ({days_ago} дн. назад)\n"
+        else:
+            text += f"   Последний полив: никогда ❗\n"
+        
+        text += f"   Создано: {plant['created_at'].strftime('%d.%m.%Y %H:%M')}\n"
+        
+        # Настройки пользователя
+        text += f"\n<b>👤 User settings:</b>\n"
+        if user_settings:
+            text += f"   reminder_enabled: {'✅' if user_settings['reminder_enabled'] else '❌'}\n"
+        else:
+            text += f"   ❌ Запись user_settings НЕ НАЙДЕНА!\n"
+        
+        # Напоминания
+        text += f"\n<b>🔔 Напоминания ({len(reminders)}):</b>\n"
+        if reminders:
+            for r in reminders:
+                status = "✅ active" if r['is_active'] else "❌ inactive"
+                next_d = r['next_date'].strftime('%d.%m.%Y') if r['next_date'] else '-'
+                last_s = r['last_sent'].strftime('%d.%m.%Y') if r['last_sent'] else 'никогда'
+                text += (
+                    f"   ID={r['id']} [{status}] {r['reminder_type']}\n"
+                    f"      next_date: {next_d}, last_sent: {last_s}, "
+                    f"отправлено: {r['send_count'] or 0} раз\n"
+                )
+        else:
+            text += f"   ❗ НЕТ ЗАПИСЕЙ В REMINDERS!\n"
+        
+        # Триггеры
+        if triggers:
+            text += f"\n<b>⏰ Триггеры пользователя:</b>\n"
+            for t in triggers:
+                status = "✅ sent" if t['sent'] else ("🛑 cancelled" if t['cancelled'] else "⏳ pending")
+                text += f"   {t['chain_type']} step={t['step']} [{status}] {t['send_at'].strftime('%d.%m %H:%M')}\n"
+        
+        await message.reply(text, parse_mode="HTML")
+        
+    except ValueError:
+        await message.reply("❌ Неверный формат plant_id. Должно быть число.")
+    except Exception as e:
+        logger.error(f"Ошибка диагностики растения: {e}", exc_info=True)
+        await message.reply(f"❌ Ошибка: {str(e)}")
+
+
 @router.message(Command("send"))
 async def send_message_to_user_command(message: types.Message, state: FSMContext):
     """
