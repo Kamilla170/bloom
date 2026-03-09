@@ -15,10 +15,18 @@ router = Router()
 
 @router.message(Command("start"))
 async def start_command(message: types.Message):
-    """Команда /start с онбордингом"""
+    """Команда /start с онбордингом и UTM-трекингом"""
     user_id = message.from_user.id
 
     logger.info(f"📩 Получена команда /start от пользователя {user_id}")
+
+    # Парсим UTM-источник из deep link: /start channel_name
+    utm_source = None
+    if message.text and len(message.text.split()) > 1:
+        utm_source = message.text.split(maxsplit=1)[1].strip()
+        # Ограничиваем длину и убираем спецсимволы
+        utm_source = utm_source[:100]
+        logger.info(f"📎 UTM source для {user_id}: {utm_source}")
 
     try:
         db = await get_db()
@@ -32,10 +40,11 @@ async def start_command(message: types.Message):
                 await db.add_user(
                     user_id=user_id,
                     username=message.from_user.username,
-                    first_name=message.from_user.first_name
+                    first_name=message.from_user.first_name,
+                    utm_source=utm_source
                 )
 
-                logger.info(f"✅ Новый пользователь {user_id} добавлен")
+                logger.info(f"✅ Новый пользователь {user_id} добавлен (utm={utm_source})")
 
                 from handlers.onboarding import start_onboarding
                 await start_onboarding(message)
