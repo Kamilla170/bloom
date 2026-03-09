@@ -45,7 +45,8 @@ class PlantDatabase:
                     questions_asked INTEGER DEFAULT 0,
                     tip_analysis_shown BOOLEAN DEFAULT FALSE,
                     tip_save_shown BOOLEAN DEFAULT FALSE,
-                    tip_watering_shown BOOLEAN DEFAULT FALSE
+                    tip_watering_shown BOOLEAN DEFAULT FALSE,
+                    utm_source TEXT
                 )
             """)
             
@@ -382,6 +383,8 @@ class PlantDatabase:
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tip_analysis_shown BOOLEAN DEFAULT FALSE")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tip_save_shown BOOLEAN DEFAULT FALSE")
                 await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS tip_watering_shown BOOLEAN DEFAULT FALSE")
+                # UTM-трекинг
+                await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS utm_source TEXT")
             except Exception as e:
                 logger.info(f"Колонки уже существуют: {e}")
             
@@ -396,6 +399,8 @@ class PlantDatabase:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_growing_plants_user_id ON growing_plants (user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders (user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_next_date ON reminders (next_date, is_active)")
+            # Индекс для UTM-трекинга
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_utm_source ON users(utm_source)")
             # === МИГРАЦИЯ: Добавление user_id в care_history ===
             logger.info("🔄 Проверка миграции care_history.user_id...")
             try:
@@ -749,19 +754,19 @@ class PlantDatabase:
     
     # === МЕТОДЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ===
     
-    async def add_user(self, user_id: int, username: str = None, first_name: str = None):
+    async def add_user(self, user_id: int, username: str = None, first_name: str = None, utm_source: str = None):
         """Добавить или обновить пользователя"""
         async with self.pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO users (user_id, username, first_name, last_activity, last_action)
-                VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 'opened_bot')
+                INSERT INTO users (user_id, username, first_name, last_activity, last_action, utm_source)
+                VALUES ($1, $2, $3, CURRENT_TIMESTAMP, 'opened_bot', $4)
                 ON CONFLICT (user_id) 
                 DO UPDATE SET 
                     username = EXCLUDED.username,
                     first_name = EXCLUDED.first_name,
                     last_activity = CURRENT_TIMESTAMP,
                     last_action = 'opened_bot'
-            """, user_id, username, first_name)
+            """, user_id, username, first_name, utm_source)
             
             await conn.execute("""
                 INSERT INTO user_settings (user_id)
