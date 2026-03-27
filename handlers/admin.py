@@ -713,16 +713,17 @@ async def migrate_onboarding_command(message: types.Message):
                 return
 
             # Вставляем 3 шага для каждого пользователя
+            from datetime import datetime
             inserted = 0
             for user in users:
                 for step, send_at in [
-                    (1, '2026-03-28 11:00:00'),
-                    (2, '2026-03-29 11:00:00'),
-                    (3, '2026-03-31 11:00:00'),
+                    (1, datetime(2026, 3, 28, 11, 0, 0)),
+                    (2, datetime(2026, 3, 29, 11, 0, 0)),
+                    (3, datetime(2026, 3, 31, 11, 0, 0)),
                 ]:
                     await conn.execute("""
                         INSERT INTO trigger_queue (user_id, chain_type, step, send_at)
-                        VALUES ($1, 'onboarding_no_click', $2, $3::timestamp)
+                        VALUES ($1, 'onboarding_no_click', $2, $3)
                     """, user['user_id'], step, send_at)
                     inserted += 1
 
