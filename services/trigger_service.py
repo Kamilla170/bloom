@@ -369,12 +369,19 @@ async def check_stop_condition(user_id: int, chain_type: str) -> bool:
             return has_sub == 0
 
         elif cancel_on == 'onboarding_clicked':
-            # Проверяем, прошёл ли пользователь онбординг (нажал кнопку)
+            # Проверяем: нажал кнопку ИЛИ уже добавил растение
             completed = await conn.fetchval("""
                 SELECT onboarding_completed FROM users
                 WHERE user_id = $1
             """, user_id)
-            return not completed
+            if completed:
+                return False
+
+            plants_count = await conn.fetchval("""
+                SELECT COUNT(*) FROM plants
+                WHERE user_id = $1 AND plant_type = 'regular'
+            """, user_id)
+            return plants_count == 0
 
     return True
 
