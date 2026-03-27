@@ -34,10 +34,18 @@ async def start_onboarding(message: types.Message):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
     )
 
+    # Запускаем цепочку на случай, если пользователь не нажмёт кнопку
+    from services.trigger_service import start_chain
+    await start_chain(message.from_user.id, 'onboarding_no_click')
+
 
 @router.callback_query(F.data == "onboarding_analyze")
 async def onboarding_analyze_callback(callback: types.CallbackQuery):
     """Пользователь нажал кнопку анализа из онбординга"""
+    # Отменяем цепочку "не нажал кнопку"
+    from services.trigger_service import cancel_chains_by_event
+    await cancel_chains_by_event(callback.from_user.id, 'onboarding_clicked')
+
     await mark_onboarding_completed(callback.from_user.id)
 
     await callback.message.answer(
