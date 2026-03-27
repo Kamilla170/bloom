@@ -675,3 +675,73 @@ async def fix_reminders_command(message: types.Message):
         )
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
+
+
+@router.message(Command("migrate_onboarding"))
+async def migrate_onboarding_command(message: types.Message):
+    """
+    Одноразовая миграция: создать цепочку onboarding_no_click
+    для старых пользователей, которые не нажали кнопку и не добавили растение.
+    Шаг 1 — завтра 11:00 МСК, шаг 2 — +24ч, шаг 3 — +72ч.
+    УДАЛИТЬ ПОСЛЕ ИСПОЛЬЗОВАНИЯ.
+    """
+    if not is_admin(message.from_user.id):
+        await message.reply("❌ У вас нет прав администратора")
+        return
+
+    try:
+        db = await get_db()
+        async with db.pool.acquire() as conn:
+            # Находим пользователей: onboarding не пройден, растений нет
+            users = await conn.fetch("""
+                SELECT u.user_id FROM users u
+                WHERE u.onboarding_completed = FALSE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM plants p
+                      WHERE p.user_id = u.user_id AND p.plant_type = 'regular'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM trigger_queue tq
+                      WHERE tq.user_id = u.user_id
+                        AND tq.chain_type = 'onboarding_no_click'
+                        AND tq.sent = FALSE AND tq.cancelled = FALSE
+                  )
+            """)
+
+            if not users:
+                await message.reply("ℹ️ Подходящих пользователей не найдено.")
+                return
+
+            # Вставляем 3 шага для каждого пользователя
+            inserted = 0
+            for user in users:
+                for step, send_at in [
+                    (1, '2026-03-28 11:00:00'),
+                    (2, '2026-03-29 11:00:00'),
+                    (3, '2026-03-31 11:00:00'),
+                ]:
+                    await conn.execute("""
+                        INSERT INTO trigger_queue (user_id, chain_type, step, send_at)
+                        VALUES ($1, 'onboarding_no_click', $2, $3::timestamp)
+                    """, user['user_id'], step, send_at)
+                    inserted += 1
+
+        user_count = len(users)
+        await message.reply(
+            f"✅ <b>Миграция выполнена!</b>\n\n"
+            f"👥 Пользователей: {user_count}\n"
+            f"📨 Создано триггеров: {inserted}\n\n"
+            f"Шаг 1: 28.03 в 11:00\n"
+            f"Шаг 2: 29.03 в 11:00\n"
+            f"Шаг 3: 31.03 в 11:00",
+            parse_mode="HTML"
+        )
+
+        logger.info(
+            f"📦 Миграция onboarding_no_click: {user_count} пользователей, "
+            f"{inserted} триггеров создано"
+        )
+
+    except Exception as e:
+        logger.error(f"Ошибка миграции onboarding: {e}", exc_info=True)
+        await message.reply(f"❌ Ошибка: {str(e)}")
