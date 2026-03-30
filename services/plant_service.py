@@ -197,7 +197,8 @@ async def get_user_plants_list(user_id: int, limit: int = 15) -> list:
                 "id": plant.get('id'),
                 "display_name": plant.get('display_name'),
                 "type": plant.get('type', 'regular'),
-                "emoji": '🌱'
+                "emoji": '🌱',
+                "photo_file_id": plant.get('photo_file_id'),
             }
             
             if plant.get('type') == 'growing':
