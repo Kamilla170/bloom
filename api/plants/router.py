@@ -24,14 +24,20 @@ from services.plant_service import (
 )
 from services.subscription_service import check_limit, increment_usage
 from services.reminder_service import create_plant_reminder
+from api.services.cloudinary_service import upload_plant_photo, get_photo_url
 from config import STATE_EMOJI, STATE_NAMES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/plants", tags=["plants"])
 
-# Временное хранилище анализов для app-пользователей (аналог temp_analyses в боте)
+# Временное хранилище анализов для app-пользователей
 _app_temp_analyses: dict[str, dict] = {}
+
+
+def _plant_photo_url(photo_file_id: str | None, width: int = 400) -> str | None:
+    """Получить URL фото или None"""
+    return get_photo_url(photo_file_id, width)
 
 
 @router.get("", response_model=PlantListResponse)
@@ -42,7 +48,7 @@ async def list_plants(user_id: int = Depends(get_current_user)):
     items = []
     for p in plants:
         if p.get("type") == "growing":
-            continue  # пока пропускаем выращиваемые
+            continue
 
         items.append(PlantSummary(
             id=p["id"],
@@ -54,6 +60,7 @@ async def list_plants(user_id: int = Depends(get_current_user)):
             last_watered=p.get("last_watered"),
             water_status=p.get("water_status", ""),
             photo_file_id=p.get("photo_file_id"),
+            photo_url=_plant_photo_url(p.get("photo_file_id"), 400),
             saved_date=p.get("saved_date"),
         ))
 
@@ -70,6 +77,8 @@ async def get_plant(plant_id: int, user_id: int = Depends(get_current_user)):
     db = await get_db()
     plant = await db.get_plant_by_id(plant_id, user_id)
 
+    photo_fid = plant.get("photo_file_id") if plant else None
+
     return PlantDetail(
         id=plant_id,
         display_name=details["plant_name"],
@@ -80,7 +89,8 @@ async def get_plant(plant_id: int, user_id: int = Depends(get_current_user)):
         watering_interval=details["watering_interval"],
         last_watered=plant.get("last_watered") if plant else None,
         water_status=details["water_status"],
-        photo_file_id=plant.get("photo_file_id") if plant else None,
+        photo_file_id=photo_fid,
+        photo_url=_plant_photo_url(photo_fid, 800),
         saved_date=plant.get("saved_date") if plant else None,
         state_changes_count=details["state_changes_count"],
         growth_stage=plant.get("growth_stage", "young") if plant else "young",
@@ -94,12 +104,10 @@ async def analyze_photo(
     user_id: int = Depends(get_current_user),
 ):
     """Загрузить фото и получить анализ растения"""
-    # Проверяем лимит
     allowed, error_msg = await check_limit(user_id, "analyses")
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
 
-    # Читаем файл
     image_bytes = await photo.read()
     if len(image_bytes) < 1000:
         raise HTTPException(status_code=400, detail="Файл слишком маленький")
@@ -115,8 +123,11 @@ async def analyze_photo(
             error=result.get("error", "Ошибка анализа"),
         )
 
-    # Увеличиваем счётчик
     await increment_usage(user_id, "analyses")
+
+    # Загружаем фото в Cloudinary
+    plant_name_safe = (result.get("plant_name") or "plant").replace(" ", "_")[:30]
+    photo_url = await upload_plant_photo(image_bytes, user_id, plant_name_safe)
 
     # Сохраняем во временное хранилище
     temp_id = str(uuid.uuid4())
@@ -125,7 +136,7 @@ async def analyze_photo(
         "analysis": result.get("raw_analysis", result["analysis"]),
         "formatted_analysis": result["analysis"],
         "photo_bytes": image_bytes,
-        "photo_file_id": None,  # У app-пользователей нет Telegram file_id
+        "photo_file_id": photo_url or "app_photo_pending",
         "plant_name": result.get("plant_name", "Неизвестное растение"),
         "confidence": result.get("confidence", 0),
         "state_info": result.get("state_info", {}),
@@ -143,6 +154,7 @@ async def analyze_photo(
         watering_interval=result.get("watering_interval"),
         state=state_info.get("current_state", "healthy"),
         temp_id=temp_id,
+        photo_url=photo_url,
     )
 
 
@@ -152,7 +164,6 @@ async def save_plant(
     user_id: int = Depends(get_current_user),
 ):
     """Сохранить проанализированное растение в коллекцию"""
-    # Проверяем лимит растений
     allowed, error_msg = await check_limit(user_id, "plants")
     if not allowed:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_msg)
@@ -161,14 +172,9 @@ async def save_plant(
     if not analysis_data or analysis_data["user_id"] != user_id:
         raise HTTPException(status_code=404, detail="Анализ не найден или истёк")
 
-    # Определяем дату последнего полива
     last_watered = None
     if req.last_watered_days_ago is not None and req.last_watered_days_ago >= 0:
         last_watered = datetime.now() - timedelta(days=req.last_watered_days_ago)
-
-    # Для app-пользователей photo_file_id будет NULL
-    # В будущем можно загружать фото в S3/Supabase Storage
-    analysis_data["photo_file_id"] = analysis_data.get("photo_file_id") or "app_photo_pending"
 
     result = await save_analyzed_plant(user_id, analysis_data, last_watered=last_watered)
 
@@ -178,6 +184,8 @@ async def save_plant(
     # Удаляем из temp
     _app_temp_analyses.pop(req.temp_id, None)
 
+    photo_url = _plant_photo_url(analysis_data.get("photo_file_id"), 800)
+
     return PlantDetail(
         id=result["plant_id"],
         display_name=result["plant_name"],
@@ -185,6 +193,7 @@ async def save_plant(
         state_emoji=result["state_emoji"],
         state_name=result["state_name"],
         watering_interval=result["interval"],
+        photo_url=photo_url,
     )
 
 
@@ -233,7 +242,6 @@ async def remove_plant(plant_id: int, user_id: int = Depends(get_current_user)):
 @router.get("/{plant_id}/history", response_model=list[StateHistoryEntry])
 async def plant_history(plant_id: int, user_id: int = Depends(get_current_user)):
     """История состояний растения"""
-    # Проверяем что растение принадлежит пользователю
     details = await get_plant_details(plant_id, user_id)
     if not details:
         raise HTTPException(status_code=404, detail="Растение не найдено")
