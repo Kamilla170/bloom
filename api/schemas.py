@@ -66,6 +66,7 @@ class PlantSummary(BaseModel):
     last_watered: Optional[datetime] = None
     water_status: str = ""
     photo_file_id: Optional[str] = None
+    photo_url: Optional[str] = None
     saved_date: Optional[datetime] = None
 
 
@@ -80,6 +81,7 @@ class PlantDetail(BaseModel):
     last_watered: Optional[datetime] = None
     water_status: str = ""
     photo_file_id: Optional[str] = None
+    photo_url: Optional[str] = None
     saved_date: Optional[datetime] = None
     state_changes_count: int = 0
     growth_stage: str = "young"
@@ -100,6 +102,7 @@ class AnalysisResponse(BaseModel):
     state: Optional[str] = None
     error: Optional[str] = None
     temp_id: Optional[str] = None
+    photo_url: Optional[str] = None
 
 
 class SavePlantRequest(BaseModel):

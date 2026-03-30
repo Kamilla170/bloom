@@ -16,3 +16,6 @@ passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1
 python-multipart>=0.0.9
 pydantic[email]>=2.0.0
+
+# === Хранение фото ===
+cloudinary>=1.36.0
