@@ -217,6 +217,18 @@ async def send_single_watering_reminder(bot, plant_row):
 
     logger.info(f"✅ Напоминание отправлено!")
 
+    # FCM пуш в приложение (параллельно Telegram)
+    try:
+        from services.fcm_service import send_push_to_user
+        await send_push_to_user(
+            user_id=user_id,
+            title=f"💧 Пора полить {plant_name}",
+            body=time_info,
+            data={"plant_id": str(plant_id), "type": "watering"},
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ FCM push не отправлен для user={user_id}: {e}")
+
 
 async def send_growing_reminders(bot):
     """Отправка напоминаний по выращиванию"""
