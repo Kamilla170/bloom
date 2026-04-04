@@ -194,3 +194,24 @@ async def get_reminders(user_id: int = Depends(get_current_user)):
         })
 
     return result
+
+
+@router.post("/test-push", response_model=SuccessResponse)
+async def test_push(user_id: int = Depends(get_current_user)):
+    """Отправить тестовый пуш на все устройства пользователя"""
+    from services.fcm_service import send_push_to_user
+
+    sent = await send_push_to_user(
+        user_id=user_id,
+        title="🌱 Bloom AI",
+        body="Тестовое уведомление! Пуши работают 🎉",
+        data={"type": "test"},
+    )
+
+    if sent == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Нет зарегистрированных устройств или Firebase не настроен",
+        )
+
+    return SuccessResponse(message=f"Отправлено на {sent} устройств")
