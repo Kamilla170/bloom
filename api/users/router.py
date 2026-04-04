@@ -1,8 +1,9 @@
 """
-Эндпоинты пользователя: профиль, настройки, подписка
+Эндпоинты пользователя: профиль, настройки, подписка, напоминания
 """
 
 import logging
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -12,6 +13,7 @@ from api.schemas import (
     UserProfile, UserSettings, UpdateSettingsRequest,
     PlanInfo, UsageStats, SuccessResponse, RegisterDeviceRequest,
 )
+from api.services.cloudinary_service import get_photo_url
 from services.subscription_service import get_user_plan, get_usage_stats
 
 logger = logging.getLogger(__name__)
@@ -147,3 +149,48 @@ async def register_device(
 
     logger.info(f"📱 FCM токен зарегистрирован: user_id={user_id}, platform={req.platform}")
     return SuccessResponse(message="Устройство зарегистрировано")
+
+
+@router.get("/reminders")
+async def get_reminders(user_id: int = Depends(get_current_user)):
+    """Список напоминаний о поливе для приложения"""
+    db = await get_db()
+
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                p.id as plant_id,
+                COALESCE(p.custom_name, p.plant_name, 'Растение #' || p.id) as plant_name,
+                p.photo_file_id,
+                p.current_state,
+                p.last_watered,
+                COALESCE(p.watering_interval, 5) as watering_interval,
+                p.reminder_enabled,
+                r.next_date
+            FROM plants p
+            LEFT JOIN reminders r
+                ON r.plant_id = p.id
+                AND r.reminder_type = 'watering'
+                AND r.is_active = TRUE
+            WHERE p.user_id = $1
+              AND p.plant_type = 'regular'
+            ORDER BY r.next_date ASC NULLS LAST
+        """, user_id)
+
+    result = []
+    for row in rows:
+        photo_fid = row.get("photo_file_id")
+        photo_url = get_photo_url(photo_fid, 200) if photo_fid else None
+
+        result.append({
+            "plant_id": row["plant_id"],
+            "plant_name": row["plant_name"],
+            "photo_url": photo_url,
+            "current_state": row.get("current_state", "healthy"),
+            "last_watered": row["last_watered"].isoformat() if row.get("last_watered") else None,
+            "watering_interval": row["watering_interval"],
+            "reminder_enabled": row.get("reminder_enabled", True),
+            "next_date": row["next_date"].isoformat() if row.get("next_date") else None,
+        })
+
+    return result
