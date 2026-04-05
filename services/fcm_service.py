@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 
+def is_initialized() -> bool:
+    return _initialized
+
+
 def init_firebase():
     """Инициализация Firebase Admin SDK из переменной окружения"""
     global _initialized
@@ -76,6 +80,7 @@ async def send_push_notification(
 async def send_push_to_user(user_id: int, title: str, body: str, data: Optional[dict] = None) -> int:
     """Отправить пуш всем устройствам пользователя. Возвращает кол-во успешных отправок."""
     if not _initialized:
+        logger.warning(f"⚠️ send_push_to_user: Firebase не инициализирован")
         return 0
 
     from database import get_db
@@ -86,6 +91,8 @@ async def send_push_to_user(user_id: int, title: str, body: str, data: Optional[
             "SELECT fcm_token FROM user_devices WHERE user_id = $1",
             user_id,
         )
+
+    logger.info(f"📱 send_push_to_user: user={user_id}, найдено устройств: {len(tokens)}")
 
     sent = 0
     for row in tokens:
