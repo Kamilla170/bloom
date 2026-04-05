@@ -199,7 +199,28 @@ async def get_reminders(user_id: int = Depends(get_current_user)):
 @router.post("/test-push", response_model=SuccessResponse)
 async def test_push(user_id: int = Depends(get_current_user)):
     """Отправить тестовый пуш на все устройства пользователя"""
-    from services.fcm_service import send_push_to_user
+    from services.fcm_service import send_push_to_user, is_initialized
+
+    # Проверяем инициализацию Firebase
+    if not is_initialized():
+        raise HTTPException(
+            status_code=500,
+            detail="Firebase Admin SDK не инициализирован. Проверь переменную FIREBASE_SERVICE_ACCOUNT в Railway.",
+        )
+
+    # Проверяем наличие устройств
+    db = await get_db()
+    async with db.pool.acquire() as conn:
+        devices_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM user_devices WHERE user_id = $1",
+            user_id,
+        )
+
+    if devices_count == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Нет зарегистрированных устройств для user_id={user_id}. Войди в приложение заново.",
+        )
 
     sent = await send_push_to_user(
         user_id=user_id,
@@ -210,8 +231,8 @@ async def test_push(user_id: int = Depends(get_current_user)):
 
     if sent == 0:
         raise HTTPException(
-            status_code=400,
-            detail="Нет зарегистрированных устройств или Firebase не настроен",
+            status_code=500,
+            detail=f"Устройств найдено: {devices_count}, но отправить не удалось. Проверь логи Railway.",
         )
 
-    return SuccessResponse(message=f"Отправлено на {sent} устройств")
+    return SuccessResponse(message=f"Отправлено на {sent} из {devices_count} устройств")
