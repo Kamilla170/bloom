@@ -46,6 +46,11 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Bloom AI REST API — запуск...")
     await init_database()
     await run_app_migrations()
+
+    # Инициализация Firebase (FCM пуши)
+    from services.fcm_service import init_firebase
+    init_firebase()
+
     logger.info("✅ API готов к работе")
     yield
     logger.info("🛑 API — завершение")
