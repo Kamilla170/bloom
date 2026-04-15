@@ -411,7 +411,6 @@ class PlantDatabase:
             # Базовые индексы
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_plants_user_id ON plants (user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_plants_state ON plants (current_state)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_plants_next_watering ON plants (next_watering_date)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_next_date ON reminders (next_date, is_active)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_care_history_user_id ON care_history(user_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_utm_source ON users(utm_source)")
@@ -483,6 +482,8 @@ class PlantDatabase:
                 CHECK (current_state IN ('healthy', 'flowering', 'growing', 'needs_care', 'dormancy'))
             """)
             logger.info("✅ CHECK constraint plants_state_check создан")
+            # Индекс на next_watering_date
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_plants_next_watering ON plants (next_watering_date)")
 
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
         """Извлекает название растения из текста анализа"""
