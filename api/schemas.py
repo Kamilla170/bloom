@@ -1,8 +1,8 @@
 """
-Pydantic схемы для REST API
+Pydantic схемы для REST API (Этап 3)
 """
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
@@ -54,7 +54,7 @@ class UpdateSettingsRequest(BaseModel):
     monthly_photo_reminder: Optional[bool] = None
 
 
-# === PLANTS ===
+# === PLANTS (Этап 3) ===
 
 class PlantSummary(BaseModel):
     id: int
@@ -64,10 +64,19 @@ class PlantSummary(BaseModel):
     state_emoji: str = "🌱"
     watering_interval: int = 7
     last_watered: Optional[datetime] = None
+    next_watering_date: Optional[date] = None
+    needs_watering: bool = False
     water_status: str = ""
     photo_file_id: Optional[str] = None
     photo_url: Optional[str] = None
     saved_date: Optional[datetime] = None
+    # Новые поля Этапа 3
+    current_streak: int = 0
+    max_streak: int = 0
+    fertilizing_enabled: bool = False
+    fertilizing_interval: Optional[int] = None
+    last_fertilized: Optional[datetime] = None
+    next_fertilizing_date: Optional[date] = None
 
 
 class PlantDetail(BaseModel):
@@ -79,13 +88,20 @@ class PlantDetail(BaseModel):
     state_name: str = "Здоровое"
     watering_interval: int = 7
     last_watered: Optional[datetime] = None
+    next_watering_date: Optional[date] = None
+    needs_watering: bool = False
     water_status: str = ""
     photo_file_id: Optional[str] = None
     photo_url: Optional[str] = None
     saved_date: Optional[datetime] = None
-    state_changes_count: int = 0
-    growth_stage: str = "young"
     analysis: Optional[str] = None
+    # Новые поля Этапа 3
+    current_streak: int = 0
+    max_streak: int = 0
+    fertilizing_enabled: bool = False
+    fertilizing_interval: Optional[int] = None
+    last_fertilized: Optional[datetime] = None
+    next_fertilizing_date: Optional[date] = None
 
 
 class PlantListResponse(BaseModel):
@@ -100,6 +116,8 @@ class AnalysisResponse(BaseModel):
     confidence: Optional[float] = None
     watering_interval: Optional[int] = None
     state: Optional[str] = None
+    fertilizing_enabled: Optional[bool] = None
+    fertilizing_interval: Optional[int] = None
     error: Optional[str] = None
     temp_id: Optional[str] = None
     photo_url: Optional[str] = None
@@ -114,20 +132,34 @@ class WaterPlantResponse(BaseModel):
     success: bool
     plant_name: str = ""
     next_watering_days: int = 7
+    next_watering_date: Optional[date] = None
+    current_streak: int = 0
+    max_streak: int = 0
     watered_at: Optional[datetime] = None
 
 
+class FertilizeResponse(BaseModel):
+    success: bool
+    plant_name: str = ""
+    next_fertilizing_date: Optional[date] = None
+    interval: int = 30
+
+
+# Универсальный апдейт растения (заменяет старый RenamePlantRequest)
+class UpdatePlantRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    fertilizing_enabled: Optional[bool] = None
+
+
+# Оставляем для обратной совместимости (бот может ещё использовать)
 class RenamePlantRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
 
 
-class StateHistoryEntry(BaseModel):
-    date: Optional[datetime] = None
-    from_state: Optional[str] = None
-    to_state: str
-    reason: Optional[str] = None
-    emoji_from: str = ""
-    emoji_to: str = "🌱"
+class PlantPhotoEntry(BaseModel):
+    id: int
+    photo_url: str
+    created_at: datetime
 
 
 # === AI ===
