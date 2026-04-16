@@ -3,13 +3,19 @@
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from api.auth.dependencies import get_current_user
 from api.schemas import (
-    SubscriptionPlan, CreatePaymentRequest, CreatePaymentResponse, SuccessResponse,
+    SubscriptionPlan,
+    PlansResponse,
+    DiscountInfo,
+    CreatePaymentRequest,
+    CreatePaymentResponse,
+    SuccessResponse,
 )
 from config import SUBSCRIPTION_PLANS, DISCOUNT_PLANS, DISCOUNT_DURATION_DAYS
 from database import get_db
@@ -21,46 +27,69 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments", tags=["payments"])
 
 
-async def _is_discount_eligible(user_id: int) -> bool:
-    """Проверяет право на скидку"""
+async def _get_discount_info(user_id: int) -> tuple[bool, Optional[datetime]]:
+    """
+    Возвращает (имеет_скидку, когда_закончится).
+    Скидка действует DISCOUNT_DURATION_DAYS дней с момента регистрации.
+    """
     try:
         db = await get_db()
         async with db.pool.acquire() as conn:
             created_at = await conn.fetchval(
                 "SELECT created_at FROM users WHERE user_id = $1", user_id
             )
-            if not created_at:
-                return False
-            now = datetime.utcnow()
-            if created_at.tzinfo:
-                created_at = created_at.replace(tzinfo=None)
-            days_since = (now - created_at).total_seconds() / 86400
-            return days_since <= DISCOUNT_DURATION_DAYS
-    except Exception:
-        return False
+        if not created_at:
+            return False, None
+        if created_at.tzinfo:
+            created_at = created_at.replace(tzinfo=None)
+        now = datetime.utcnow()
+        days_since = (now - created_at).total_seconds() / 86400
+        if days_since > DISCOUNT_DURATION_DAYS:
+            return False, None
+        ends_at = created_at + timedelta(days=DISCOUNT_DURATION_DAYS)
+        return True, ends_at
+    except Exception as e:
+        logger.error(f"❌ discount check failed for user_id={user_id}: {e}")
+        return False, None
 
 
-@router.get("/plans", response_model=list[SubscriptionPlan])
+def _compute_discount_percent() -> int:
+    """Процент скидки считается по 1month: (1 - promo/regular) * 100"""
+    regular = SUBSCRIPTION_PLANS["1month"]["price"]
+    promo = DISCOUNT_PLANS["1month"]["price"]
+    if regular <= 0:
+        return 0
+    return round((1 - promo / regular) * 100)
+
+
+@router.get("/plans", response_model=PlansResponse)
 async def list_plans(user_id: int = Depends(get_current_user)):
-    """Список тарифных планов (с учётом скидки если доступна)"""
-    has_discount = await _is_discount_eligible(user_id)
+    """Список тарифов с информацией о скидке"""
+    has_discount, ends_at = await _get_discount_info(user_id)
 
-    if has_discount:
-        plans_source = DISCOUNT_PLANS
-    else:
-        plans_source = SUBSCRIPTION_PLANS
-
-    plans = []
-    for plan_id, plan in plans_source.items():
+    plans: list[SubscriptionPlan] = []
+    for plan_id, regular in SUBSCRIPTION_PLANS.items():
+        discounted = DISCOUNT_PLANS.get(plan_id) if has_discount else None
+        active = discounted or regular
         plans.append(SubscriptionPlan(
             id=plan_id,
-            label=plan["label"],
-            price=plan["price"],
-            days=plan["days"],
-            per_month=plan.get("per_month"),
+            label=regular["label"],
+            days=regular["days"],
+            price=active["price"],
+            original_price=regular["price"],
+            per_month=active.get("per_month"),
+            is_popular=(plan_id == "3months"),
         ))
 
-    return plans
+    discount_info: Optional[DiscountInfo] = None
+    if has_discount and ends_at:
+        discount_info = DiscountInfo(
+            percent=_compute_discount_percent(),
+            ends_at=ends_at,
+            label="Скидка для новых пользователей",
+        )
+
+    return PlansResponse(plans=plans, discount=discount_info)
 
 
 @router.post("/create", response_model=CreatePaymentResponse)
@@ -72,13 +101,8 @@ async def create_new_payment(
     if await is_pro(user_id):
         raise HTTPException(status_code=400, detail="У вас уже есть подписка")
 
-    # Определяем цену: скидочная или обычная
-    has_discount = await _is_discount_eligible(user_id)
-
-    if has_discount:
-        plan = DISCOUNT_PLANS.get(req.plan_id)
-    else:
-        plan = SUBSCRIPTION_PLANS.get(req.plan_id)
+    has_discount, _ = await _get_discount_info(user_id)
+    plan = (DISCOUNT_PLANS if has_discount else SUBSCRIPTION_PLANS).get(req.plan_id)
 
     if not plan:
         raise HTTPException(status_code=404, detail="Тариф не найден")
