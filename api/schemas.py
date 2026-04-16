@@ -70,7 +70,6 @@ class PlantSummary(BaseModel):
     photo_file_id: Optional[str] = None
     photo_url: Optional[str] = None
     saved_date: Optional[datetime] = None
-    # Новые поля Этапа 3
     current_streak: int = 0
     max_streak: int = 0
     fertilizing_enabled: bool = False
@@ -95,7 +94,6 @@ class PlantDetail(BaseModel):
     photo_url: Optional[str] = None
     saved_date: Optional[datetime] = None
     analysis: Optional[str] = None
-    # Новые поля Этапа 3
     current_streak: int = 0
     max_streak: int = 0
     fertilizing_enabled: bool = False
@@ -145,13 +143,11 @@ class FertilizeResponse(BaseModel):
     interval: int = 30
 
 
-# Универсальный апдейт растения (заменяет старый RenamePlantRequest)
 class UpdatePlantRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     fertilizing_enabled: Optional[bool] = None
 
 
-# Оставляем для обратной совместимости (бот может ещё использовать)
 class RenamePlantRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
 
@@ -200,9 +196,22 @@ class UsageStats(BaseModel):
 class SubscriptionPlan(BaseModel):
     id: str
     label: str
-    price: int
+    price: int              # текущая цена (со скидкой, если активна)
+    original_price: int     # цена без скидки; равна price, если скидки нет
     days: int
     per_month: Optional[int] = None
+    is_popular: bool = False
+
+
+class DiscountInfo(BaseModel):
+    percent: int
+    ends_at: datetime
+    label: str
+
+
+class PlansResponse(BaseModel):
+    plans: List[SubscriptionPlan]
+    discount: Optional[DiscountInfo] = None
 
 
 class CreatePaymentRequest(BaseModel):
