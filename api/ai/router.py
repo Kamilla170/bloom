@@ -3,8 +3,10 @@
 """
 
 import logging
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 
 from api.auth.dependencies import get_current_user
 from api.schemas import QuestionRequest, QuestionResponse
@@ -17,6 +19,66 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
+
+# ---------- Схемы для истории чата ----------
+
+class ChatMessageOut(BaseModel):
+    id: int
+    question: str
+    answer: str
+    created_at: str  # ISO datetime
+    plant_id: Optional[int] = None
+    plant_name: Optional[str] = None
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: List[ChatMessageOut]
+    total: int
+
+
+# ---------- Получить историю чата ----------
+
+@router.get("/chat/{plant_id}", response_model=ChatHistoryResponse)
+async def get_plant_chat_history(
+    plant_id: int,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user_id: int = Depends(get_current_user),
+):
+    """Получить историю чата по конкретному растению"""
+    db = await get_db()
+
+    # Проверяем, что растение принадлежит пользователю
+    plant = await db.get_plant_with_state(plant_id, user_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail="Растение не найдено")
+
+    qa_list = await db.get_plant_qa_history(plant_id, limit=limit)
+    plant_name = plant.get("display_name", "Растение")
+
+    messages = []
+    for qa in qa_list:
+        try:
+            created = qa.get("question_date") or qa.get("created_at")
+            messages.append(ChatMessageOut(
+                id=qa.get("id", 0),
+                question=qa.get("question_text", ""),
+                answer=qa.get("answer_text", ""),
+                created_at=created.isoformat() if created else "",
+                plant_id=plant_id,
+                plant_name=plant_name,
+            ))
+        except Exception as e:
+            logger.error(f"Ошибка форматирования сообщения: {e}")
+            continue
+
+    # Разворачиваем: старые сообщения сверху
+    messages.reverse()
+
+    return ChatHistoryResponse(messages=messages, total=len(messages))
+
+
+# ---------- Задать вопрос ----------
 
 @router.post("/question", response_model=QuestionResponse)
 async def ask_question(
