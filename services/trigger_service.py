@@ -12,6 +12,48 @@ logger = logging.getLogger(__name__)
 # === КОНФИГУРАЦИЯ ЦЕПОЧЕК ===
 
 TRIGGER_CHAINS = {
+    'onboarding_no_click': {
+        'description': 'Нажал /start, но не нажал кнопку анализа',
+        'steps': [
+            {
+                'delay_hours': 3,
+                'message': (
+                    "🌱 Пришли мне фото любого растения — расскажу, "
+                    "что это за вид и как за ним ухаживать. "
+                    "Это бесплатно и занимает пару секунд."
+                ),
+                'button_text': '📸 Отправить фото',
+                'button_callback': 'onboarding_analyze',
+            },
+            {
+                'delay_hours': 24,
+                'message': (
+                    "🌿 Вот что ты получишь, когда пришлёшь фото растения:\n\n"
+                    "🔍 Вид и состояние\n"
+                    "💧 График полива\n"
+                    "🔔 Напоминания\n\n"
+                    "Одно фото — и всё настроено!"
+                ),
+                'button_text': '📸 Отправить фото',
+                'button_callback': 'onboarding_analyze',
+            },
+            {
+                'delay_hours': 72,
+                'message': (
+                    "🌿 Я умею распознавать тысячи видов — "
+                    "от обычных фиалок до редких тропических. "
+                    "Подбираю уход под конкретное состояние: "
+                    "если растение болеет — одни советы, "
+                    "если цветёт — совсем другие.\n\n"
+                    "Пришли фото, когда будет настроение!"
+                ),
+                'button_text': '📸 Отправить фото',
+                'button_callback': 'onboarding_analyze',
+            },
+        ],
+        'cancel_on': 'onboarding_clicked',
+    },
+
     'onboarding_no_plant': {
         'description': 'Прошёл онбординг, но не добавил растение',
         'steps': [
@@ -325,6 +367,21 @@ async def check_stop_condition(user_id: int, chain_type: str) -> bool:
                 AND expires_at > CURRENT_TIMESTAMP
             """, user_id)
             return has_sub == 0
+
+        elif cancel_on == 'onboarding_clicked':
+            # Проверяем: нажал кнопку ИЛИ уже добавил растение
+            completed = await conn.fetchval("""
+                SELECT onboarding_completed FROM users
+                WHERE user_id = $1
+            """, user_id)
+            if completed:
+                return False
+
+            plants_count = await conn.fetchval("""
+                SELECT COUNT(*) FROM plants
+                WHERE user_id = $1 AND plant_type = 'regular'
+            """, user_id)
+            return plants_count == 0
 
     return True
 
