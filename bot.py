@@ -67,10 +67,6 @@ async def on_startup():
         await init_database()
         logger.info("✅ База данных инициализирована")
         
-        # Инициализация Firebase (FCM пуши)
-        from services.fcm_service import init_firebase
-        init_firebase()
-        
         # Миграция базовых интервалов (один раз)
         await migrate_base_intervals()
         
