@@ -353,10 +353,9 @@ async def check_stop_condition(user_id: int, chain_type: str) -> bool:
 
     async with db.pool.acquire() as conn:
         if cancel_on == 'plant_added':
-            # Любое растение пользователя — триггер больше не нужен
             plants_count = await conn.fetchval("""
                 SELECT COUNT(*) FROM plants
-                WHERE user_id = $1
+                WHERE user_id = $1 AND plant_type = 'regular'
             """, user_id)
             return plants_count == 0
 
@@ -378,10 +377,9 @@ async def check_stop_condition(user_id: int, chain_type: str) -> bool:
             if completed:
                 return False
 
-            # Любое растение — онбординг не нужен
             plants_count = await conn.fetchval("""
                 SELECT COUNT(*) FROM plants
-                WHERE user_id = $1
+                WHERE user_id = $1 AND plant_type = 'regular'
             """, user_id)
             return plants_count == 0
 
