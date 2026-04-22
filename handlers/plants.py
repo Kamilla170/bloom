@@ -183,7 +183,6 @@ async def water_single_plant_callback(callback: types.CallbackQuery):
                 parse_mode="HTML"
             )
             
-            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого полива ===
             from handlers.onboarding import send_tip_if_needed, TIP_AFTER_WATERING
             
             async def _send_watering_tip():
@@ -216,7 +215,6 @@ async def water_plants_callback(callback: types.CallbackQuery):
                 reply_markup=simple_back_menu()
             )
             
-            # === КОНТЕКСТНАЯ ПОДСКАЗКА: после первого полива ===
             from handlers.onboarding import send_tip_if_needed, TIP_AFTER_WATERING
             
             async def _send_watering_tip():
@@ -487,7 +485,6 @@ async def save_plant_handler(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     
-    # Проверка лимита растений
     allowed, error_msg = await check_limit(user_id, 'plants')
     if not allowed:
         from handlers.subscription import send_limit_message
@@ -497,7 +494,6 @@ async def save_plant_handler(callback: types.CallbackQuery, state: FSMContext):
     analysis_data = temp_analyses[user_id]
     plant_name = analysis_data.get("plant_name", "растение")
     
-    # Устанавливаем состояние ожидания даты полива
     await state.update_data(saving_plant=True)
     await state.set_state(PlantStates.waiting_last_watering)
     
@@ -527,7 +523,6 @@ async def handle_last_water_choice(callback: types.CallbackQuery, state: FSMCont
         await callback.answer()
         return
     
-    # Определяем дату последнего полива
     now = datetime.now()
     last_watered = None
     
@@ -540,9 +535,8 @@ async def handle_last_water_choice(callback: types.CallbackQuery, state: FSMCont
     elif choice == "week":
         last_watered = now - timedelta(days=7)
     elif choice == "skip":
-        last_watered = None  # Не устанавливаем
+        last_watered = None
     
-    # Сохраняем растение
     await finish_save_plant(callback.message, user_id, last_watered, state)
     await callback.answer()
 
@@ -559,16 +553,13 @@ async def handle_last_water_text(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Пробуем распарсить дату
     parsed_date = parse_user_date(message.text)
     
     logger.info(f"📅 Результат парсинга: {parsed_date}")
     
     if parsed_date:
-        # Успешно распарсили
         await finish_save_plant(message, user_id, parsed_date, state)
     else:
-        # Не удалось распарсить - просим уточнить
         await message.reply(
             "🤔 <b>Не могу понять дату</b>\n\n"
             "Попробуйте написать иначе:\n"
@@ -585,25 +576,24 @@ async def finish_save_plant(message_or_callback, user_id: int, last_watered: dat
     try:
         analysis_data = temp_analyses[user_id]
         
-        # Считаем количество растений ДО сохранения (чтобы понять, первое ли это)
+        # Проверяем, выдавалась ли уже стартовая скидка (33% для новых пользователей).
+        # Условие именно по флагу, а не по количеству растений — иначе после сброса/удаления
+        # растений старый пользователь получил бы скидку повторно.
         db = await get_db()
         async with db.pool.acquire() as conn:
-            plants_before = await conn.fetchval("""
-                SELECT COUNT(*) FROM plants
-                WHERE user_id = $1 AND plant_type = 'regular'
+            discount_given = await conn.fetchval("""
+                SELECT first_plant_discount_given FROM users WHERE user_id = $1
             """, user_id)
+        discount_given = bool(discount_given)
         
-        # Передаём дату последнего полива в save_analyzed_plant
         result = await save_analyzed_plant(user_id, analysis_data, last_watered=last_watered)
         
         if result["success"]:
             del temp_analyses[user_id]
             
-            # Отменяем триггерные цепочки, связанные с добавлением растения
             from services.trigger_service import cancel_chains_by_event, start_chain
             await cancel_chains_by_event(user_id, 'plant_added')
             
-            # Формируем сообщение об успехе
             success_text = f"✅ <b>Растение добавлено!</b>\n\n"
             success_text += f"🌱 <b>{result['plant_name']}</b> в вашей коллекции\n"
             success_text += f"{result['state_emoji']} <b>Состояние:</b> {result['state_name']}\n"
@@ -616,19 +606,23 @@ async def finish_save_plant(message_or_callback, user_id: int, last_watered: dat
             success_text += f"🧠 <b>Система памяти активирована!</b>\n"
             success_text += f"Теперь я буду помнить всю историю этого растения"
             
-            # Отправляем сообщение
             if isinstance(message_or_callback, types.Message):
                 await message_or_callback.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
             else:
                 await message_or_callback.answer(success_text, parse_mode="HTML", reply_markup=main_menu())
             
             # === ОНБОРДИНГ ПОСЛЕ ПЕРВОГО РАСТЕНИЯ ===
-            if plants_before == 0:
-                # Первое растение: подсказка "Спросить ИИ" + таймер на скидку
+            if not discount_given:
+                # Ставим флаг ДО запуска цепочки — защита от повторной выдачи
+                # в случае любых ошибок на последующих шагах
+                async with db.pool.acquire() as conn:
+                    await conn.execute("""
+                        UPDATE users SET first_plant_discount_given = TRUE WHERE user_id = $1
+                    """, user_id)
+                
                 await _send_ask_ai_tip(message_or_callback, user_id)
                 await start_chain(user_id, 'first_plant_discount')
             else:
-                # Последующие растения: стандартная подсказка
                 from handlers.onboarding import send_tip_if_needed, TIP_AFTER_SAVE
                 
                 async def _send_save_tip():
