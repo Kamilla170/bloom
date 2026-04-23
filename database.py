@@ -728,6 +728,26 @@ class PlantDatabase:
             """)
             logger.info("✅ Подписки для существующих пользователей созданы")
 
+            # === МИГРАЦИЯ: Скидка-извинение за сбой (апрель 2026) ===
+            logger.info("🎁 Миграция apology-скидки...")
+            await conn.execute("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS apology_discount_until TIMESTAMP
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS apology_broadcast_log (
+                    user_id BIGINT PRIMARY KEY,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    variant TEXT NOT NULL,
+                    blocked BOOLEAN DEFAULT FALSE,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+            """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_apology_log_sent_at 
+                ON apology_broadcast_log(sent_at DESC)
+            """)
+            logger.info("✅ Миграция apology-скидки применена")
+
             logger.info("✅ Все миграции применены успешно")
     
     def extract_plant_name_from_analysis(self, analysis_text: str) -> str:
