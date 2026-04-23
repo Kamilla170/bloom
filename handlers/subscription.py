@@ -6,11 +6,13 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import (
     ADMIN_USER_IDS, SUBSCRIPTION_PLANS, FREE_LIMITS,
-    DISCOUNT_PLANS, DISCOUNT_DURATION_DAYS
+    DISCOUNT_PLANS, DISCOUNT_DURATION_DAYS,
+    APOLOGY_DISCOUNT_PLANS, APOLOGY_DISCOUNT_DURATION_DAYS,
 )
 from database import get_db
 from services.subscription_service import (
-    get_user_plan, get_usage_stats, activate_pro, revoke_pro, is_pro
+    get_user_plan, get_usage_stats, activate_pro, revoke_pro, is_pro,
+    has_apology_discount,
 )
 from services.payment_service import create_payment, cancel_auto_payment
 
@@ -36,7 +38,7 @@ def plans_keyboard():
 
 
 def discount_plans_keyboard():
-    """Клавиатура с выбором тарифа (скидочные цены)"""
+    """Клавиатура с выбором тарифа (скидка 33% для новых)"""
     buttons = []
     for plan_id, plan in DISCOUNT_PLANS.items():
         original = plan['original_price']
@@ -54,8 +56,27 @@ def discount_plans_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+def apology_plans_keyboard():
+    """Клавиатура с выбором тарифа (скидка 40% — извинения)"""
+    buttons = []
+    for plan_id, plan in APOLOGY_DISCOUNT_PLANS.items():
+        original = plan['original_price']
+        discounted = plan['price']
+        label = plan['label']
+        if plan['days'] > 30:
+            text = f"🔥 {label} — {discounted}₽ (вместо {original}₽)"
+        else:
+            text = f"🔥 {label} — {discounted}₽/мес (вместо {original}₽)"
+        buttons.append([InlineKeyboardButton(
+            text=text,
+            callback_data=f"buy_apology_{plan_id}"
+        )])
+    buttons.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 async def is_discount_eligible(user_id: int) -> bool:
-    """Проверяет, имеет ли пользователь право на скидку (≤ 3 дней с регистрации)"""
+    """Проверяет, имеет ли пользователь право на скидку 33% (≤ 3 дней с регистрации)"""
     try:
         db = await get_db()
         async with db.pool.acquire() as conn:
@@ -66,7 +87,6 @@ async def is_discount_eligible(user_id: int) -> bool:
             if not created_at:
                 return False
             
-            # Убираем timezone info если есть, для корректного сравнения
             now = datetime.utcnow()
             if created_at.tzinfo:
                 created_at = created_at.replace(tzinfo=None)
@@ -147,10 +167,26 @@ async def pro_command(message: types.Message):
     else:
         stats = await get_usage_stats(user_id)
         
-        # Проверяем право на скидку
-        has_discount = await is_discount_eligible(user_id)
+        # Приоритет: скидка-извинение 40% > обычная 33%
+        has_apology = await has_apology_discount(user_id)
+        has_discount = await is_discount_eligible(user_id) if not has_apology else False
         
-        if has_discount:
+        if has_apology:
+            await message.answer(
+                f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
+                f"<b>Использование функций:</b>\n"
+                f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
+                f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
+                f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
+                f"🎁 <b>Скидка 40% в качестве извинений</b>\n\n"
+                f"⭐ Подписка снимает все ограничения:\n"
+                f"• Неограниченное добавление растений\n"
+                f"• Безлимитное количество анализов растений\n"
+                f"• Поддержка 24/7 по всем вопросам о растениях\n",
+                parse_mode="HTML",
+                reply_markup=apology_plans_keyboard()
+            )
+        elif has_discount:
             await message.answer(
                 f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
                 f"<b>Использование функций:</b>\n"
@@ -198,10 +234,20 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
         await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
         return
     
-    # Проверяем право на скидку
-    has_discount = await is_discount_eligible(user_id)
+    has_apology = await has_apology_discount(user_id)
+    has_discount = await is_discount_eligible(user_id) if not has_apology else False
     
-    if has_discount:
+    if has_apology:
+        await callback.message.answer(
+            "🎁 <b>Скидка 40% в качестве извинений</b>\n\n"
+            "⭐ Подписка снимает все ограничения:\n"
+            "• Неограниченное добавление растений\n"
+            "• Безлимитное количество анализов растений\n"
+            "• Поддержка 24/7 по всем вопросам о растениях\n",
+            parse_mode="HTML",
+            reply_markup=apology_plans_keyboard()
+        )
+    elif has_discount:
         await callback.message.answer(
             "🔥 <b>Скидка 33% для новых пользователей!</b>\n\n"
             "⭐ Подписка снимает все ограничения:\n"
@@ -224,6 +270,110 @@ async def subscribe_pro_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data == "show_apology_plans")
+async def show_apology_plans_callback(callback: types.CallbackQuery):
+    """Показать тарифы со скидкой 40% (из рассылки-извинения)"""
+    user_id = callback.from_user.id
+    
+    if await is_pro(user_id):
+        await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
+        return
+    
+    has_apology = await has_apology_discount(user_id)
+    
+    if has_apology:
+        await callback.message.answer(
+            "🎁 <b>Ваша скидка 40%</b>\n\n"
+            "Выберите тариф:\n\n"
+            "• 1 мес — <s>249₽</s> <b>149₽</b>\n"
+            "• 3 мес — <s>599₽</s> <b>349₽</b>\n"
+            "• 6 мес — <s>1099₽</s> <b>649₽</b>\n"
+            "• 12 мес — <s>2099₽</s> <b>1249₽</b>\n\n"
+            "Подписка снимает все ограничения.",
+            parse_mode="HTML",
+            reply_markup=apology_plans_keyboard()
+        )
+    else:
+        await callback.message.answer(
+            "⏰ К сожалению, скидка уже истекла.\n\n"
+            "Но вы можете оформить подписку по обычной цене:",
+            parse_mode="HTML",
+            reply_markup=plans_keyboard()
+        )
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("buy_apology_"))
+async def buy_apology_plan_callback(callback: types.CallbackQuery):
+    """Оформление подписки со скидкой 40% (без автопродления)"""
+    user_id = callback.from_user.id
+    plan_id = callback.data.replace("buy_apology_", "")
+    
+    apology_plan = APOLOGY_DISCOUNT_PLANS.get(plan_id)
+    if not apology_plan:
+        await callback.answer("❌ Тариф не найден", show_alert=True)
+        return
+    
+    if await is_pro(user_id):
+        await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
+        return
+    
+    has_apology = await has_apology_discount(user_id)
+    
+    if not has_apology:
+        await callback.message.answer(
+            "⏰ К сожалению, скидка уже истекла.\n\n"
+            "Вы можете оформить подписку по обычной цене:",
+            parse_mode="HTML",
+            reply_markup=plans_keyboard()
+        )
+        await callback.answer()
+        return
+    
+    processing_msg = await callback.message.answer(
+        "💳 <b>Создаю ссылку на оплату...</b>",
+        parse_mode="HTML"
+    )
+    
+    # Автопродление отключено — разовый платёж
+    # (иначе через месяц со скидочной подписки спишется 249₽, что будет вторым факапом)
+    result = await create_payment(
+        user_id=user_id,
+        amount=apology_plan['price'],
+        days=apology_plan['days'],
+        plan_label=f"{apology_plan['label']} (скидка 40%)",
+        save_method=False
+    )
+    
+    await processing_msg.delete()
+    
+    if result:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Перейти к оплате", url=result['confirmation_url'])],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ])
+        
+        await callback.message.answer(
+            f"💳 <b>Оплата подписки со скидкой</b>\n\n"
+            f"⭐ Тариф: <b>{apology_plan['label']}</b>\n"
+            f"💰 Сумма: <s>{apology_plan['original_price']}₽</s> <b>{apology_plan['price']}₽</b>\n"
+            f"📅 Период: <b>{apology_plan['days']} дней</b>\n\n"
+            f"Нажмите кнопку ниже для перехода к оплате.\n"
+            f"После оплаты подписка активируется автоматически.",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+    else:
+        await callback.message.answer(
+            "❌ <b>Не удалось создать платёж</b>\n\n"
+            "Платёжная система временно недоступна. Попробуйте позже.",
+            parse_mode="HTML"
+        )
+    
+    await callback.answer()
+
+
 @router.callback_query(F.data == "show_discount_plans")
 async def show_discount_plans_callback(callback: types.CallbackQuery):
     """Показать скидочные тарифы (из триггерных сообщений)"""
@@ -233,7 +383,6 @@ async def show_discount_plans_callback(callback: types.CallbackQuery):
         await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
         return
     
-    # Проверяем, ещё ли действует скидка
     has_discount = await is_discount_eligible(user_id)
     
     if has_discount:
@@ -261,11 +410,10 @@ async def show_discount_plans_callback(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("buy_discount_"))
 async def buy_discount_plan_callback(callback: types.CallbackQuery):
-    """Оформление подписки со скидкой"""
+    """Оформление подписки со скидкой 33%"""
     user_id = callback.from_user.id
     plan_id = callback.data.replace("buy_discount_", "")
     
-    # Проверяем существование плана
     discount_plan = DISCOUNT_PLANS.get(plan_id)
     regular_plan = SUBSCRIPTION_PLANS.get(plan_id)
     if not discount_plan or not regular_plan:
@@ -276,7 +424,6 @@ async def buy_discount_plan_callback(callback: types.CallbackQuery):
         await callback.answer("У вас уже есть подписка! ⭐", show_alert=True)
         return
     
-    # Проверяем право на скидку
     has_discount = await is_discount_eligible(user_id)
     
     if not has_discount:
@@ -294,10 +441,8 @@ async def buy_discount_plan_callback(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     
-    # Автопродление только для месячного тарифа
     save_method = (plan_id == '1month')
     
-    # Создаём платёж со скидочной ценой
     result = await create_payment(
         user_id=user_id,
         amount=discount_plan['price'],
@@ -343,8 +488,8 @@ async def buy_plan_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     plan_id = callback.data.replace("buy_", "")
     
-    # Пропускаем если это discount_ (обрабатывается выше)
-    if plan_id.startswith("discount_"):
+    # Пропускаем если это discount_ или apology_ (обрабатываются выше)
+    if plan_id.startswith("discount_") or plan_id.startswith("apology_"):
         return
     
     plan = SUBSCRIPTION_PLANS.get(plan_id)
@@ -361,7 +506,6 @@ async def buy_plan_callback(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     
-    # Автопродление только для месячного тарифа
     save_method = (plan_id == '1month')
     
     result = await create_payment(
@@ -467,10 +611,25 @@ async def show_subscription_callback(callback: types.CallbackQuery):
     else:
         stats = await get_usage_stats(user_id)
         
-        # Проверяем право на скидку
-        has_discount = await is_discount_eligible(user_id)
+        has_apology = await has_apology_discount(user_id)
+        has_discount = await is_discount_eligible(user_id) if not has_apology else False
         
-        if has_discount:
+        if has_apology:
+            await callback.message.answer(
+                f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
+                f"<b>Использование функций:</b>\n"
+                f"🌱 Растений: {stats['plants_count']}/{stats['plants_limit']}\n"
+                f"📸 Анализов: {stats['analyses_used']}/{stats['analyses_limit']}\n"
+                f"🤖 Вопросов: {stats['questions_used']}/{stats['questions_limit']}\n\n"
+                f"🎁 <b>Скидка 40% в качестве извинений</b>\n\n"
+                f"⭐ Подписка снимает все ограничения:\n"
+                f"• Неограниченное добавление растений\n"
+                f"• Безлимитное количество анализов растений\n"
+                f"• Поддержка 24/7 по всем вопросам о растениях\n",
+                parse_mode="HTML",
+                reply_markup=apology_plans_keyboard()
+            )
+        elif has_discount:
             await callback.message.answer(
                 f"🌱 <b>Ваш план: Бесплатный</b>\n\n"
                 f"<b>Использование функций:</b>\n"
@@ -507,10 +666,7 @@ async def show_subscription_callback(callback: types.CallbackQuery):
 
 @router.message(Command("grant_pro"))
 async def grant_pro_command(message: types.Message):
-    """
-    /grant_pro {user_id} {days}
-    Выдать подписку пользователю на N дней
-    """
+    """/grant_pro {user_id} {days}"""
     if message.from_user.id not in ADMIN_USER_IDS:
         await message.reply("❌ Нет прав администратора")
         return
@@ -557,7 +713,6 @@ async def grant_pro_command(message: types.Message):
             parse_mode="HTML"
         )
         
-        # Уведомляем пользователя
         try:
             await message.bot.send_message(
                 chat_id=target_user_id,
@@ -580,10 +735,7 @@ async def grant_pro_command(message: types.Message):
 
 @router.message(Command("revoke_pro"))
 async def revoke_pro_command(message: types.Message):
-    """
-    /revoke_pro {user_id}
-    Отозвать подписку
-    """
+    """/revoke_pro {user_id}"""
     if message.from_user.id not in ADMIN_USER_IDS:
         await message.reply("❌ Нет прав администратора")
         return
@@ -612,4 +764,132 @@ async def revoke_pro_command(message: types.Message):
         await message.reply("❌ Неверный формат user_id")
     except Exception as e:
         logger.error(f"Ошибка revoke_pro: {e}", exc_info=True)
+        await message.reply(f"❌ Ошибка: {str(e)}")
+
+
+@router.message(Command("send_apology"))
+async def send_apology_command(message: types.Message):
+    """
+    /send_apology {user_id}
+    Выставляет пользователю скидку 40% на 3 дня и отправляет сообщение-извинение.
+    Идемпотентно: повторный запуск не отправит дважды (проверяется по apology_broadcast_log).
+    """
+    if message.from_user.id not in ADMIN_USER_IDS:
+        await message.reply("❌ Нет прав администратора")
+        return
+    
+    try:
+        parts = message.text.split()
+        
+        if len(parts) < 2:
+            await message.reply(
+                "📝 <b>Формат:</b> /send_apology {user_id}\n\n"
+                "<b>Пример:</b> /send_apology 8390994875",
+                parse_mode="HTML"
+            )
+            return
+        
+        target_user_id = int(parts[1])
+        
+        db = await get_db()
+        user_info = await db.get_user_info_by_id(target_user_id)
+        
+        if not user_info:
+            await message.reply(f"❌ Пользователь с ID {target_user_id} не найден")
+            return
+        
+        # Проверяем, не отправляли ли уже
+        async with db.pool.acquire() as conn:
+            already_sent = await conn.fetchval("""
+                SELECT sent_at FROM apology_broadcast_log WHERE user_id = $1
+            """, target_user_id)
+        
+        if already_sent:
+            await message.reply(
+                f"⚠️ Пользователю {target_user_id} уже отправлялось извинение "
+                f"({already_sent.strftime('%d.%m.%Y %H:%M')})\n\n"
+                f"Для повторной отправки удалите запись из apology_broadcast_log"
+            )
+            return
+        
+        # Определяем вариант сообщения: платник или бесплатник
+        plan_info = await get_user_plan(target_user_id)
+        is_paid = plan_info['plan'] == 'pro'
+        
+        now = datetime.now()
+        discount_until = now + timedelta(days=APOLOGY_DISCOUNT_DURATION_DAYS)
+        
+        # Ставим скидку ТОЛЬКО бесплатникам (платникам она не нужна, им продлили подписку)
+        if not is_paid:
+            async with db.pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE users SET apology_discount_until = $1 WHERE user_id = $2
+                """, discount_until, target_user_id)
+        
+        # Формируем сообщение
+        if is_paid:
+            text = (
+                "Привет! 🌱\n\n"
+                "У нас случился технический сбой, из-за которого все растения "
+                "пользователей были удалены из базы. Восстановить данные, "
+                "к сожалению, не получилось.\n\n"
+                "Чтобы вернуться к уходу за зелёными друзьями, добавьте их заново.\n\n"
+                "В качестве извинений продлим вашу подписку ещё на 3 месяца бесплатно.\n\n"
+                "Спасибо, что остаётесь со мной 💚"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌿 Добавить растение", callback_data="add_plant")],
+            ])
+            variant = 'paid'
+        else:
+            text = (
+                "Привет! 🌱\n\n"
+                "У нас случился технический сбой, из-за которого все растения "
+                "пользователей были удалены из базы. Восстановить данные, "
+                "к сожалению, не получилось.\n\n"
+                "Чтобы вернуться к уходу за зелёными друзьями, добавьте их заново.\n\n"
+                "В качестве извинений получите скидку 40% на подписку — действует 3 дня.\n\n"
+                "Спасибо, что остаётесь со мной 💚"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌿 Добавить растение", callback_data="add_plant")],
+                [InlineKeyboardButton(text="✨ Оформить со скидкой 40%", callback_data="show_apology_plans")],
+            ])
+            variant = 'free'
+        
+        # Отправляем
+        try:
+            await message.bot.send_message(
+                chat_id=target_user_id,
+                text=text,
+                reply_markup=keyboard
+            )
+            blocked = False
+        except Exception as e:
+            logger.warning(f"Не удалось отправить {target_user_id}: {e}")
+            blocked = True
+        
+        # Логируем
+        async with db.pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO apology_broadcast_log (user_id, variant, blocked)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id) DO NOTHING
+            """, target_user_id, variant, blocked)
+        
+        username = user_info.get('username') or user_info.get('first_name') or f"user_{target_user_id}"
+        status = "❌ заблокировал бота" if blocked else "✅ отправлено"
+        
+        await message.reply(
+            f"{status}\n\n"
+            f"👤 {username} (ID: {target_user_id})\n"
+            f"📋 Вариант: {'платник (3 мес подписки)' if is_paid else 'бесплатник (скидка 40%)'}\n"
+            + (f"🕒 Скидка действует до: {discount_until.strftime('%d.%m.%Y %H:%M')}" if not is_paid else ""),
+            parse_mode="HTML"
+        )
+        
+    except ValueError:
+        await message.reply("❌ Неверный формат user_id")
+    except Exception as e:
+        logger.error(f"Ошибка send_apology: {e}", exc_info=True)
         await message.reply(f"❌ Ошибка: {str(e)}")
