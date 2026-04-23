@@ -90,6 +90,40 @@ DISCOUNT_PLANS = {
         'original_price': 2099,
     },
 }
+# Скидка 40% — извинения за сбой (апрель 2026).
+# Механизм одноразовый, выдаётся вручную через /send_apology.
+APOLOGY_DISCOUNT_PLANS = {
+    '1month': {
+        'label': '1 месяц',
+        'price': 149,
+        'original_price': 249,
+        'days': 30,
+        'per_month': 149,
+    },
+    '3months': {
+        'label': '3 месяца',
+        'price': 349,
+        'original_price': 599,
+        'days': 90,
+        'per_month': 116,
+    },
+    '6months': {
+        'label': '6 месяцев',
+        'price': 649,
+        'original_price': 1099,
+        'days': 180,
+        'per_month': 108,
+    },
+    '12months': {
+        'label': '12 месяцев',
+        'price': 1249,
+        'original_price': 2099,
+        'days': 365,
+        'per_month': 104,
+    },
+}
+
+APOLOGY_DISCOUNT_DURATION_DAYS = 3
 
 # Срок действия скидки для новых пользователей (дни с момента регистрации)
 DISCOUNT_DURATION_DAYS = 3
