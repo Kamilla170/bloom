@@ -346,3 +346,19 @@ async def get_expiring_subscriptions(days_before: int = 1) -> list:
         """, now, target_date)
     
     return [dict(row) for row in rows]
+async def has_apology_discount(user_id: int) -> bool:
+    """Проверяет активна ли у пользователя скидка-извинение 40%"""
+    db = await get_db()
+    async with db.pool.acquire() as conn:
+        until = await conn.fetchval("""
+            SELECT apology_discount_until FROM users WHERE user_id = $1
+        """, user_id)
+    
+    if not until:
+        return False
+    
+    now = datetime.now()
+    if until.tzinfo:
+        until = until.replace(tzinfo=None)
+    
+    return until > now
