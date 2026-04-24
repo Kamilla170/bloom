@@ -739,8 +739,15 @@ class PlantDatabase:
                     sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     variant TEXT NOT NULL,
                     blocked BOOLEAN DEFAULT FALSE,
+                    status TEXT DEFAULT 'sent',
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
+            """)
+            # Добавляем status если таблица уже существовала без неё (от тестового запуска).
+            # DEFAULT 'sent' — существующие тестовые записи помечаются как уже отправленные.
+            await conn.execute("""
+                ALTER TABLE apology_broadcast_log 
+                ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'sent'
             """)
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_apology_log_sent_at 
